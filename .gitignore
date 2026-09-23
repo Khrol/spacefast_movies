@@ -13,3 +13,8 @@ test-results/
 playwright-report/
 *.service-account.json
 firebase-backup.json
+
+.spacefast/
+.env.*
+!.env.example
+*.sqlite*

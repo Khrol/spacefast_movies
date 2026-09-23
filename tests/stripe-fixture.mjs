@@ -27,18 +27,18 @@ export class StripeFixture {
   factory = key => this.data[key.includes('_live_') ? 'live' : 'test'].client;
   complete(uid, mode = 'live') {
     const {state} = this.data[mode];
-    const customer = [...state.customers.values()].find(c => c.metadata.firebase_uid === uid);
+    const customer = [...state.customers.values()].find(c => c.metadata.reel_uid === uid);
     const session = [...state.sessions.values()].find(s => s.customer === customer.id);
     session.status = 'complete'; session.payment_status = 'paid';
-    state.subscriptions.set(customer.id, [{id: `sub_${mode}${state.counter}`, customer: customer.id, metadata: {firebase_uid: uid}, status: 'active', livemode: mode === 'live', cancel_at_period_end: false, items: {data: [{quantity: 1, current_period_end: Math.floor(Date.now() / 1000) + 86400, price: {...state.price, recurring: {interval: 'month', interval_count: 1}}}]}, latest_invoice: {status: 'paid', amount_paid: 100}}]);
+    state.subscriptions.set(customer.id, [{id: `sub_${mode}${state.counter}`, customer: customer.id, metadata: {reel_uid: uid}, status: 'active', livemode: mode === 'live', cancel_at_period_end: false, items: {data: [{quantity: 1, current_period_end: Math.floor(Date.now() / 1000) + 86400, price: {...state.price, recurring: {interval: 'month', interval_count: 1}}}]}, latest_invoice: {status: 'paid', amount_paid: 100}}]);
     return session;
   }
   subscription(uid, mode = 'live') {
-    const {state} = this.data[mode], customer = [...state.customers.values()].find(c => c.metadata.firebase_uid === uid);
+    const {state} = this.data[mode], customer = [...state.customers.values()].find(c => c.metadata.reel_uid === uid);
     return state.subscriptions.get(customer.id)[0];
   }
   webhook(uid, mode = 'live', changes = {}, timestamp = Math.floor(Date.now() / 1000)) {
-    const {state, client} = this.data[mode], customer = [...state.customers.values()].find(c => c.metadata.firebase_uid === uid);
+    const {state, client} = this.data[mode], customer = [...state.customers.values()].find(c => c.metadata.reel_uid === uid);
     const payload = JSON.stringify({id: 'evt_fixture', livemode: mode === 'live', type: 'invoice.paid', data: {object: {customer: customer.id}}, ...changes});
     return {payload, signature: client.webhooks.generateTestHeaderString({payload, secret: state.secret, timestamp})};
   }

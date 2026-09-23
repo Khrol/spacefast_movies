@@ -1,34 +1,28 @@
 {
-  "name": "reel-together-firebase",
+  "name": "reel-together-spacefast",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "functions"
-  ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "build": "vite build",
-    "test": "node --test tests/unit.test.mjs",
-    "test:integration": "node scripts/test.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/unit.test.mjs tests/database.test.mjs tests/auth.test.mjs",
+    "test:integration": "node --test --test-concurrency=1 tests/integration.test.mjs tests/browser.test.mjs",
     "check": "npm test && npm run build && npm run test:integration",
-    "deploy": "node scripts/deploy.mjs",
-    "admin": "node scripts/admin.mjs"
+    "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {
-    "firebase": "^12.19.0"
+    "@noble/hashes": "^2.0.1",
+    "hono": "^4.10.0",
+    "stripe": "^18.0.0"
   },
   "devDependencies": {
     "vite": "^8.0.0",
-    "firebase-tools": "^15.29.0",
-    "@playwright/test": "^1.63.0"
-  },
-  "overrides": {
-    "gaxios": {
-      "uuid": "^11.1.1"
-    }
+    "@playwright/test": "^1.63.0",
+    "esbuild": "^0.27.7",
+    "spacefast": "0.4.1"
   }
 }

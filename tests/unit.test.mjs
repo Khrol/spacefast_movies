@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseMovieId, viewing, activeLink, validGrant, canSee, watchKey} from '../functions/src/domain.js';
-import {safePoster} from '../functions/src/catalog.js';
-import {subscriptionStatus} from '../functions/src/billing.js';
+import {parseMovieId, viewing, activeLink, validGrant, canSee, watchKey} from '../server/domain.js';
+import {safePoster} from '../server/catalog.js';
+import {subscriptionStatus} from '../server/billing.js';
 
 test('movie IDs preserve IMDb zeros and reject untrusted URLs', () => {
   assert.equal(parseMovieId('https://www.imdb.com/title/tt0126029/?ref_=x', 'imdb'), 'tt0126029');
@@ -40,10 +40,10 @@ test('watchlist uniqueness is separate from repeat viewings', () => {
 });
 test('billing accepts only paid, current, correctly priced subscriptions for this identity', () => {
   const config = {mode: 'live', price: 'price_test'}, end = Math.floor(Date.now() / 1000) + 3600;
-  const subscription = {metadata: {firebase_uid: 'a'}, livemode: true, status: 'active', items: {data: [{quantity: 1, current_period_end: end, price: {id: 'price_test', currency: 'eur', unit_amount: 100, recurring: {interval: 'month', interval_count: 1}}}]}, latest_invoice: {status: 'paid', amount_paid: 100}};
+  const subscription = {metadata: {reel_uid: 'a'}, livemode: true, status: 'active', items: {data: [{quantity: 1, current_period_end: end, price: {id: 'price_test', currency: 'eur', unit_amount: 100, recurring: {interval: 'month', interval_count: 1}}}]}, latest_invoice: {status: 'paid', amount_paid: 100}};
   assert.deepEqual(subscriptionStatus(subscription, config, 'a'), {state: 'active', paid_until: end});
   assert.equal(subscriptionStatus({...subscription, cancel_at_period_end: true}, config, 'a').state, 'ending');
-  for (const patch of [{livemode: false}, {status: 'canceled'}, {metadata: {firebase_uid: 'b'}}, {latest_invoice: {status: 'open', amount_paid: 0}}, {pause_collection: {behavior: 'void'}}]) assert.equal(subscriptionStatus({...subscription, ...patch}, config, 'a').paid_until, 0);
+  for (const patch of [{livemode: false}, {status: 'canceled'}, {metadata: {reel_uid: 'b'}}, {latest_invoice: {status: 'open', amount_paid: 0}}, {pause_collection: {behavior: 'void'}}]) assert.equal(subscriptionStatus({...subscription, ...patch}, config, 'a').paid_until, 0);
   const wrong = structuredClone(subscription); wrong.items.data[0].price.unit_amount = 1;
   assert.equal(subscriptionStatus(wrong, config, 'a').paid_until, 0);
   assert.equal(subscriptionStatus({...subscription, metadata: {}}, config, 'a').paid_until, 0);

@@ -1,11 +1,12 @@
-import {createHash, randomBytes} from 'node:crypto';
+import {sha256} from '@noble/hashes/sha2.js';
+import {bytesToHex} from '@noble/hashes/utils.js';
 
 export class AppError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
 }
 export const fail = (message, status = 400) => { throw new AppError(message, status); };
-export const hash = value => createHash('sha256').update(String(value)).digest('hex');
-export const newId = () => randomBytes(16).toString('hex');
+export const hash = value => bytesToHex(sha256(new TextEncoder().encode(String(value))));
+export const newId = () => bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
 export function text(value, max, required = false) {
   if (typeof value !== 'string' || [...value].length > max || (required && !value.trim())) fail(`Enter ${required ? 'a value' : 'text'} of at most ${max} characters.`);
   return value.trim().replace(/\u0000/g, '');

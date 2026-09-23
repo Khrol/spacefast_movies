@@ -2,26 +2,27 @@ import test, {before, after} from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {chromium, expect} from '@playwright/test';
-import {initializeApp, deleteApp} from 'firebase-admin/app';
-import {getAuth} from 'firebase-admin/auth';
-import {getFirestore} from 'firebase-admin/firestore';
-if (!process.env.FIRESTORE_EMULATOR_HOST || process.env.GCLOUD_PROJECT !== 'demo-reel-together') throw new Error('Browser tests require the demo emulators.');
-const adminApp = initializeApp({projectId: 'demo-reel-together'}), db = getFirestore(), auth = getAuth();
+import {createApp, localDatabase, serve} from '../scripts/local-server.mjs';
+import {passwordHash} from '../server/auth.js';
+import {hash} from '../server/domain.js';
+const {db, binding} = await localDatabase();
+let server;
 let browser;
 before(async () => {
   await db.doc('settings/app').set({billingEnabled: false, publicRegistration: false});
   for (const name of ['author', 'wife', 'admin']) {
     const uid = `ui-${name}`, email = `ui-${name}@example.test`;
-    await auth.createUser({uid, email, password: 'browser-test-2026', displayName: name, emailVerified: true});
-    if (name === 'admin') await auth.setCustomUserClaims(uid, {admin: true});
+    await db.doc(`accounts/${uid}`).set({id: uid, email, name, verified: true, admin: name === 'admin', password: await passwordHash('browser-test-2026'), sessionVersion: 'browser'});
+    await db.doc(`accountEmails/${hash(email)}`).set({uid});
     await db.doc(`users/${uid}`).set({name, email, approved: true, complimentary: false, household_id: '', membership_epoch: uid, created_at: Date.now()});
   }
+  server = await serve(createApp({db, secrets: {local: true}}));
   browser = await chromium.launch({headless: true, ...(process.env.REEL_BROWSER_CHANNEL ? {channel: process.env.REEL_BROWSER_CHANNEL} : process.platform === 'darwin' ? {channel: 'chrome'} : {})});
   await mkdir('test-results', {recursive: true});
 });
-after(async () => { await browser?.close(); await db.terminate(); await deleteApp(adminApp); });
+after(async () => { await browser?.close(); await server?.close(); binding.close(); });
 async function login(page, who) {
-  await page.goto('http://127.0.0.1:9500/');
+  await page.goto(server.base);
   await page.locator('#auth-form').getByLabel('Email', {exact: true}).fill(`ui-${who}@example.test`);
   await page.getByLabel('Password', {exact: true}).fill('browser-test-2026');
   await page.getByRole('button', {name: 'Open my diary', exact: true}).click();

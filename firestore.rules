@@ -1,8 +1,0 @@
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    // Every operation goes through the authenticated server API. Clients cannot
-    // write billing, approval, household membership, or sharing grants directly.
-    match /{document=**} { allow read, write: if false; }
-  }
-}

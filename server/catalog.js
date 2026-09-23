@@ -24,7 +24,7 @@ export class Catalog {
     if (!response.ok) fail('The catalog is unavailable or rejected its API key.', 502);
     const chunks = []; let bytes = 0;
     for await (const chunk of response.body) { bytes += chunk.length; if (bytes > 400000) fail('Unexpected catalog response.', 502); chunks.push(chunk); }
-    try { return JSON.parse(Buffer.concat(chunks).toString()); } catch { fail('Unexpected catalog response.', 502); }
+    try { return JSON.parse(new TextDecoder().decode(Uint8Array.from(chunks.flatMap(chunk => [...chunk])))); } catch { fail('Unexpected catalog response.', 502); }
   }
   async map(source, provider, imdb = '') {
     const kp = provider === 'kinopoisk', key = Number(source[kp ? 'kinopoiskId' : 'id']);
@@ -39,7 +39,7 @@ export class Catalog {
   }
   async cached(key, fn) {
     const ref = this.db.doc(`catalogCache/${hash(key)}`), cached = (await ref.get()).data();
-    if (cached && cached.expiresAt.toMillis() > Date.now()) return cached.value;
+    if (cached && new Date(cached.expiresAt).getTime() > Date.now()) return cached.value;
     const value = await fn();
     await ref.set({value, expiresAt: new Date(Date.now() + 3600000)});
     return value;

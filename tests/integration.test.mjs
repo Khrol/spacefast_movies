@@ -1,31 +1,27 @@
 import test, {before, after} from 'node:test';
 import assert from 'node:assert/strict';
-import {initializeApp, deleteApp} from 'firebase-admin/app';
-import {getAuth} from 'firebase-admin/auth';
-import {getFirestore} from 'firebase-admin/firestore';
-import {createApp} from '../functions/src/app.js';
-import {Billing} from '../functions/src/billing.js';
-import {Catalog} from '../functions/src/catalog.js';
+import {createApp, localDatabase, serve} from '../scripts/local-server.mjs';
+import {Billing} from '../server/billing.js';
+import {Catalog} from '../server/catalog.js';
+import {hash, newId} from '../server/domain.js';
 import {StripeFixture} from './stripe-fixture.mjs';
 
-const project = 'demo-reel-together';
-if (!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_AUTH_EMULATOR_HOST || process.env.GCLOUD_PROJECT !== project) throw new Error('Integration tests require the isolated demo Firebase emulators.');
-const adminApp = initializeApp({projectId: project}), db = getFirestore(), auth = getAuth();
-const stripe = new StripeFixture(), secrets = {origin: 'https://films.example.test', kinopoiskToken: 'fixture', stripe: {test: {secretKey: 'sk_test_fixture'}, live: {secretKey: 'sk_live_fixture'}}};
+const {db, binding} = await localDatabase();
+const stripe = new StripeFixture(), secrets = {origin: 'https://films.example.test', local: true, kinopoiskToken: 'fixture', stripe: {test: {secretKey: 'sk_test_fixture'}, live: {secretKey: 'sk_live_fixture'}}};
 const billing = new Billing(db, secrets, stripe.factory);
 const catalog = new Catalog(db, secrets, async url => new Response(JSON.stringify(url.pathname === '/api/v2.2/films/430' ? {kinopoiskId: 430, nameRu: 'Шрек', year: 2001, imdbId: 'tt0126029', ratingKinopoisk: 8, ratingImdb: 7.9, posterUrl: 'https://kinopoiskapiunofficial.tech/images/posters/kp/430.jpg'} : {items: [{kinopoiskId: 430, nameRu: 'Шрек', year: 2001, imdbId: 'tt0126029', ratingKinopoisk: 8}]}), {status: 200, headers: {'Content-Type': 'application/json'}}));
 let server, base;
 const tokens = {};
 async function user(key, {admin = false, verified = true, approved = true} = {}) {
   const uid = `test-${key}`, address = `${key}@example.test`;
-  await auth.createUser({uid, email: address, password: 'test-password-2026', emailVerified: verified, displayName: key});
-  if (admin) await auth.setCustomUserClaims(uid, {admin: true});
+  await db.doc(`accounts/${uid}`).set({id: uid, email: address, name: key, verified, admin, sessionVersion: 'v1'});
   await db.doc(`users/${uid}`).set({name: key, email: address, approved, complimentary: false, household_id: '', membership_epoch: uid, created_at: Date.now()});
-  const response = await fetch(`http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=demo-key`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: address, password: 'test-password-2026', returnSecureToken: true})});
-  tokens[key] = (await response.json()).idToken; assert.ok(tokens[key]); return uid;
+  const token = newId() + newId();
+  await db.doc(`authSessions/${hash(token)}`).set({uid, version: 'v1', expiresAt: Date.now() + 3600000});
+  tokens[key] = token; return uid;
 }
 async function call(who, route, method = 'GET', body, headers = {}) {
-  const response = await fetch(`${base}/api/${route}`, {method, headers: {'Content-Type': 'application/json', ...(who ? {Authorization: `Bearer ${tokens[who] || who}`} : {}), ...headers}, body: body === undefined ? undefined : JSON.stringify(body)});
+  const response = await fetch(`${base}/api/${route}`, {method, headers: {'Content-Type': 'application/json', Origin: secrets.origin, ...(who ? {Cookie: `reel_session=${tokens[who] || who}`} : {}), ...headers}, body: body === undefined ? undefined : JSON.stringify(body)});
   return {status: response.status, data: await response.json(), headers: response.headers};
 }
 async function ok(who, route, method = 'GET', body, expected = 200) { const result = await call(who, route, method, body); assert.equal(result.status, expected, JSON.stringify(result.data)); return result.data; }
@@ -37,13 +33,12 @@ async function hook(uid, mode = 'live', changes = {}, timestamp) {
 }
 before(async () => {
   await db.doc('settings/app').set({billingEnabled: false, publicRegistration: false});
-  server = createApp({db, auth, secrets, catalog, billing}).listen(0, '127.0.0.1');
-  await new Promise(resolve => server.once('listening', resolve)); base = `http://127.0.0.1:${server.address().port}`;
+  server = await serve(createApp({db, secrets, catalog, billing})); base = server.base;
   await user('owner', {admin: true}); await user('author'); await user('wife'); await user('third'); await user('outsider'); await user('unverified', {verified: false}); await user('pending', {approved: false});
 });
-after(async () => { await new Promise(resolve => server.close(resolve)); await db.terminate(); await deleteApp(adminApp); });
+after(async () => { await server.close(); binding.close(); });
 
-test('authentication, approval, and direct Firestore access are enforced', async () => {
+test('authentication, approval, and direct database isolation are enforced', async () => {
   assert.equal((await call(null, 'entries')).status, 401);
   assert.equal((await call('forged-token', 'entries')).status, 401);
   assert.equal((await call('unverified', 'session')).status, 403);
@@ -52,10 +47,8 @@ test('authentication, approval, and direct Firestore access are enforced', async
   assert.equal((await call('author', 'admin/overview')).status, 403);
   await ok('owner', 'admin/approve-email', 'POST', {email: 'pending@example.test'});
   assert.equal((await ok('pending', 'session')).approved, true);
-  const direct = await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST}/v1/projects/${project}/databases/(default)/documents/users/test-author`, {headers: {Authorization: `Bearer ${tokens.author}`}});
-  assert.equal(direct.status, 403);
-  const write = await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST}/v1/projects/${project}/databases/(default)/documents/users/test-author`, {method: 'PATCH', headers: {Authorization: `Bearer ${tokens.author}`, 'Content-Type': 'application/json'}, body: JSON.stringify({fields: {complimentary: {booleanValue: true}}})});
-  assert.equal(write.status, 403);
+  assert.equal((await call('author', 'database')).status, 404);
+  assert.equal((await call('author', 'admin/users')).status, 403);
 });
 test('private entries, validation, repeat viewings, and watchlist race protection', async () => {
   const entry = await ok('author', 'entries', 'POST', viewing(), 201);

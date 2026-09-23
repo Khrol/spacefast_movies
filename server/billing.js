@@ -5,12 +5,12 @@ export const STRIPE_VERSION = '2025-03-31.basil';
 export const BILLING_EVENTS = ['checkout.session.completed', 'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted', 'invoice.paid', 'invoice.payment_failed'];
 export function subscriptionStatus(subscription, config, uid) {
   const item = subscription.items?.data?.[0], price = item?.price, invoice = subscription.latest_invoice;
-  const identity = subscription.metadata?.firebase_uid === uid;
+  const identity = subscription.metadata?.reel_uid === uid;
   const valid = identity && subscription.livemode === (config.mode === 'live') && subscription.status === 'active' && !subscription.pause_collection && subscription.items.data.length === 1 && item.quantity === 1 && price?.id === config.price && price.unit_amount === 100 && price.currency === 'eur' && price.recurring?.interval === 'month' && price.recurring.interval_count === 1 && invoice && typeof invoice === 'object' && invoice.status === 'paid' && invoice.amount_paid >= 100 && item.current_period_end > Date.now() / 1000;
   return valid ? {state: subscription.cancel_at_period_end ? 'ending' : 'active', paid_until: item.current_period_end} : {state: subscription.status === 'past_due' ? 'past_due' : 'inactive', paid_until: 0};
 }
 export class Billing {
-  constructor(db, secrets, factory = key => new Stripe(key, {apiVersion: STRIPE_VERSION, maxNetworkRetries: 2, timeout: 15000})) { this.db = db; this.secrets = secrets; this.factory = factory; }
+  constructor(db, secrets, factory = key => new Stripe(key, {apiVersion: STRIPE_VERSION, maxNetworkRetries: 2, timeout: 15000, httpClient: Stripe.createFetchHttpClient()})) { this.db = db; this.secrets = secrets; this.factory = factory; }
   accountRef(uid, mode) { return this.db.doc(`billingAccounts/${choice(mode, ['test', 'live'])}_${id(uid)}`); }
   async config(mode) { return {...(await this.db.doc(`billingConfig/${choice(mode, ['test', 'live'])}`).get()).data(), mode}; }
   client(mode) {
@@ -21,7 +21,7 @@ export class Billing {
   origin() {
     const origin = this.secrets.origin;
     let parsed; try { parsed = new URL(origin); } catch { fail('The site owner must configure the public site URL.', 503); }
-    const local = process.env.FUNCTIONS_EMULATOR === 'true' && ['localhost', '127.0.0.1'].includes(parsed.hostname);
+    const local = this.secrets.local === true && ['localhost', '127.0.0.1'].includes(parsed.hostname);
     if ((!local && parsed.protocol !== 'https:') || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) fail('Configure a valid HTTPS site origin.', 503);
     return parsed.origin;
   }
@@ -107,7 +107,7 @@ export class Billing {
       row = await this.reconcile(user.id, mode, row, ref);
       if (row.has_subscription) fail('You already have a subscription. Use Manage billing.', 409);
       if (!row.customer_id) {
-        const customer = await stripe.customers.create({email: user.email, name: user.name, metadata: {firebase_uid: user.id}}, {idempotencyKey: hash(`${this.db.projectId}:${config.account}:${mode}:${user.id}:customer`)});
+        const customer = await stripe.customers.create({email: user.email, name: user.name, metadata: {reel_uid: user.id}}, {idempotencyKey: hash(`${this.db.projectId}:${config.account}:${mode}:${user.id}:customer`)});
         row = {...row, customer_id: customer.id, account: config.account};
         // Persist identity before exposing a payable checkout URL.
         const batch = this.db.batch();
@@ -124,7 +124,7 @@ export class Billing {
       const key = row.checkout_pending_key || newId();
       await ref.set({checkout_pending_key: key}, {merge: true});
       const origin = this.origin();
-      const session = await stripe.checkout.sessions.create({mode: 'subscription', customer: row.customer_id, client_reference_id: user.id, line_items: [{price: config.price, quantity: 1}], subscription_data: {metadata: {firebase_uid: user.id}}, success_url: `${origin}/?checkout_session={CHECKOUT_SESSION_ID}&billing_mode=${mode}`, cancel_url: `${origin}/?membership=1`, allow_promotion_codes: false, billing_address_collection: 'required', automatic_tax: {enabled: this.secrets.stripe?.automaticTax === true}}, {idempotencyKey: `${mode}-${key}`});
+      const session = await stripe.checkout.sessions.create({mode: 'subscription', customer: row.customer_id, client_reference_id: user.id, line_items: [{price: config.price, quantity: 1}], subscription_data: {metadata: {reel_uid: user.id}}, success_url: `${origin}/?checkout_session={CHECKOUT_SESSION_ID}&billing_mode=${mode}`, cancel_url: `${origin}/?membership=1`, allow_promotion_codes: false, billing_address_collection: 'required', automatic_tax: {enabled: this.secrets.stripe?.automaticTax === true}}, {idempotencyKey: `${mode}-${key}`});
       await ref.set({checkout_id: session.id, checkout_pending_key: ''}, {merge: true});
       return {url: session.url};
     });
@@ -154,7 +154,7 @@ export class Billing {
     const config = await this.config(mode);
     if (!config.webhook_secret) fail('Webhook not configured.', 503);
     let event;
-    try { event = this.client(mode).webhooks.constructEvent(raw, signature, config.webhook_secret, 300); } catch { fail('Invalid webhook signature.'); }
+    try { event = await this.client(mode).webhooks.constructEventAsync(raw, signature, config.webhook_secret, 300, Stripe.createSubtleCryptoProvider()); } catch { fail('Invalid webhook signature.'); }
     if (event.livemode !== (mode === 'live') || (event.account && event.account !== config.account)) fail('Wrong Stripe account or mode.');
     if (!BILLING_EVENTS.includes(event.type)) return {received: true};
     const customer = event.data?.object?.customer;

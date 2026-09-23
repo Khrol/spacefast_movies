@@ -1,0 +1,10 @@
+{
+  "$schema": "https://spacefast.com/schemas/sf.json",
+  "name": "Reel Together",
+  "runtime": {
+    "kind": "functions",
+    "database": true,
+    "fetch": true,
+    "compatibilityDate": "2026-07-01"
+  }
+}

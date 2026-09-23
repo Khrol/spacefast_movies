@@ -1,7 +1,10 @@
 import {spawn} from 'node:child_process';
-const args = process.argv.slice(2), project = args[args.indexOf('--project') + 1];
-if (!args.includes('--project') || !project || !/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(project) || project.startsWith('demo-')) throw new Error('Usage: npm run deploy -- --project YOUR_FIREBASE_PROJECT_ID');
-if (process.env.FIRESTORE_EMULATOR_HOST || process.env.FIREBASE_AUTH_EMULATOR_HOST) throw new Error('Unset emulator environment variables before deploying.');
-function run(bin, args, env = process.env) { return new Promise((resolve, reject) => { const child = spawn(bin, args, {stdio: 'inherit', env}); child.on('error', reject); child.on('exit', code => code ? reject(new Error(`Command failed (${code}).`)) : resolve()); }); }
-await run(process.execPath, ['node_modules/vite/bin/vite.js', 'build'], {...process.env, VITE_USE_EMULATORS: 'false'});
-await run(process.execPath, ['node_modules/firebase-tools/lib/bin/firebase.js', 'deploy', '--project', project, '--only', 'hosting,functions:reel-together,firestore']);
+import {readFile} from 'node:fs/promises';
+const run = args => new Promise((resolve, reject) => {
+  const child = spawn(process.execPath, args, {stdio: 'inherit'});
+  child.on('error', reject); child.on('exit', code => code ? reject(new Error(`Command exited ${code}`)) : resolve());
+});
+const state = JSON.parse(await readFile('.spacefast/space.json', 'utf8'));
+if (!state.space) throw new Error('Link the existing Space first; deployment never creates a replacement automatically.');
+await run(['scripts/build.mjs']);
+await run(['node_modules/spacefast/dist/cli.js', 'publish', 'dist', '--prebuilt', '--space', state.space, '--api-url', 'https://api.spacefast.com', '--wait', ...process.argv.slice(2)]);

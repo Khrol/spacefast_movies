@@ -1,7 +1,7 @@
 import './app.css';
-import './firebase.css';
-import {onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendEmailVerification, sendPasswordResetEmail, updateProfile, signOut} from 'firebase/auth';
-import {initializeFirebase, auth, api, escape, useEmulators} from './api.js';
+import './account.css';
+import {onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendEmailVerification, sendPasswordResetEmail, signOut, initializeAuth, completeAccountAction} from './auth.js';
+import {auth, api, escape} from './api.js';
 import {welcome, shell} from './shell.js';
 import {mountDiary} from './diary.js';
 import {membership, administration} from './views.js';
@@ -12,16 +12,14 @@ const errorText = error => ({'auth/invalid-credential': 'The email or password i
 function status(message) { const el = document.getElementById('auth-message'); if (el) el.textContent = message; }
 function login(mode = 'login') {
   const signup = mode === 'signup', reset = mode === 'reset';
-  root.innerHTML = welcome(`<p class="eyebrow">WELCOME TO YOUR LITTLE CINEMA</p><h2>${signup ? 'Save your seat.' : reset ? 'Let’s get you back in.' : 'Come on in.'}</h2><p>${signup ? 'Create an account, then verify your email.' : reset ? 'We’ll email you a link to choose a new password.' : 'Sign in to your private diary and household watchlist.'}</p>${publicConfig?.billing_enabled ? '<p>Membership is €1 per person, per month. The owner can grant complimentary access.</p>' : ''}<form id="auth-form">${signup ? '<label for="display-name">Your name</label><input id="display-name" name="name" required maxlength="100" autocomplete="name">' : ''}<label for="email">Email</label><input id="email" name="email" type="email" required maxlength="254" autocomplete="email">${!reset ? `<label for="password">Password</label><input id="password" name="password" type="password" required ${signup ? 'minlength="12"' : ''} autocomplete="${signup ? 'new-password' : 'current-password'}">` : ''}<button class="button primary" type="submit">${signup ? 'Create account' : reset ? 'Send reset link' : 'Open my diary'}</button><p id="auth-message" class="form-error" role="status" aria-live="polite"></p></form>${mode !== 'login' ? '<button class="text-button" data-auth-view="login">Back to sign in</button>' : '<button class="text-button" data-auth-view="reset">Forgot your password?</button><p class="signup">New here? <button class="text-button" data-auth-view="signup">Create an account</button></p>'}${!publicConfig?.public_registration ? '<details class="invitation-request"><summary>Request an invitation</summary><p>The site owner reviews requests personally. Creating an account requires their approval.</p><form id="invitation-form"><label for="invite-name">Your name</label><input id="invite-name" name="name" maxlength="100" required autocomplete="name"><label for="invite-email">Email</label><input id="invite-email" name="email" type="email" maxlength="254" required autocomplete="email"><div class="honeypot" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div><button class="button secondary" type="submit">Request invitation</button><p class="form-error" role="status"></p></form></details>' : ''}${useEmulators ? '<p class="helper">Local preview: moviebuff@example.test / movie-night-2026<br>Owner: owner@example.test / movie-night-2026</p>' : ''}`);
+  root.innerHTML = welcome(`<p class="eyebrow">WELCOME TO YOUR LITTLE CINEMA</p><h2>${signup ? 'Save your seat.' : reset ? 'Let’s get you back in.' : 'Come on in.'}</h2><p>${signup ? 'Create an account, then verify your email.' : reset ? 'We’ll email you a link to choose a new password.' : 'Sign in to your private diary and household watchlist.'}</p>${publicConfig?.billing_enabled ? '<p>Membership is €1 per person, per month. The owner can grant complimentary access.</p>' : ''}<form id="auth-form">${signup ? '<label for="display-name">Your name</label><input id="display-name" name="name" required maxlength="100" autocomplete="name">' : ''}<label for="email">Email</label><input id="email" name="email" type="email" required maxlength="254" autocomplete="email">${!reset ? `<label for="password">Password</label><input id="password" name="password" type="password" required ${signup ? 'minlength="12"' : ''} autocomplete="${signup ? 'new-password' : 'current-password'}">` : ''}<button class="button primary" type="submit">${signup ? 'Create account' : reset ? 'Send reset link' : 'Open my diary'}</button><p id="auth-message" class="form-error" role="status" aria-live="polite"></p></form>${mode !== 'login' ? '<button class="text-button" data-auth-view="login">Back to sign in</button>' : '<button class="text-button" data-auth-view="reset">Forgot your password?</button><p class="signup">New here? <button class="text-button" data-auth-view="signup">Create an account</button></p>'}${!publicConfig?.public_registration ? '<details class="invitation-request"><summary>Request an invitation</summary><p>The site owner reviews requests personally. Creating an account requires their approval.</p><form id="invitation-form"><label for="invite-name">Your name</label><input id="invite-name" name="name" maxlength="100" required autocomplete="name"><label for="invite-email">Email</label><input id="invite-email" name="email" type="email" maxlength="254" required autocomplete="email"><div class="honeypot" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div><button class="button secondary" type="submit">Request invitation</button><p class="form-error" role="status"></p></form></details>' : ''}`);
   document.getElementById('auth-form').addEventListener('submit', async event => {
     event.preventDefault(); const form = event.target, button = form.querySelector('button'); button.disabled = true;
     const address = form.elements.email.value.trim();
     try {
       if (reset) { await sendPasswordResetEmail(auth, address); status('If an account exists for this email, a reset link is on its way.'); }
       else if (signup) {
-        const result = await createUserWithEmailAndPassword(auth, address, form.elements.password.value);
-        await updateProfile(result.user, {displayName: form.elements.name.value.trim()});
-        await sendEmailVerification(result.user);
+        await createUserWithEmailAndPassword(auth, address, form.elements.password.value, form.elements.name.value.trim());
         verifyScreen(); status('Check your inbox for the verification link.');
       } else await signInWithEmailAndPassword(auth, address, form.elements.password.value);
     } catch (error) { status(errorText(error)); }
@@ -83,9 +81,24 @@ root.addEventListener('click', async event => {
   if (button.dataset.section) { try { await window.ReelViews[button.dataset.section](); } catch (error) { alert(errorText(error)); } }
 });
 try {
-  await initializeFirebase(); publicConfig = await api('config', 'GET', undefined, true);
-  onAuthStateChanged(auth, boot);
+  await initializeAuth(); publicConfig = await api('config', 'GET', undefined, true);
+  const action = ['setup', 'verify', 'reset'].find(key => new URLSearchParams(location.hash.slice(1)).has(key));
+  if (action) {
+    const token = new URLSearchParams(location.hash.slice(1)).get(action);
+    history.replaceState(null, '', location.pathname + location.search);
+    accountAction(action, token);
+  } else onAuthStateChanged(auth, boot);
 } catch (error) {
   root.innerHTML = welcome(`<h2>Let’s get things ready.</h2><p role="alert">${escape(errorText(error))}</p><button class="button primary" id="reload">Try again</button>`);
   document.getElementById('reload').onclick = () => location.reload();
+}
+
+function accountAction(action, token) {
+  const setup = action === 'setup', verify = action === 'verify';
+  root.innerHTML = welcome(`<h2>${setup ? 'Your cinema starts here.' : verify ? 'Verify your email.' : 'Choose a new password.'}</h2><p>${setup ? 'Create your owner account to open Reel Together.' : verify ? 'Confirm your email address to continue.' : 'Use at least 12 characters to protect your diary.'}</p><form id="account-action">${setup ? '<label for="setup-name">Your name</label><input id="setup-name" name="name" required maxlength="100" autocomplete="name">' : ''}${verify ? '' : '<label for="new-password">New password</label><input id="new-password" name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password">'}<button class="button primary">${setup ? 'Open my cinema' : verify ? 'Verify email' : 'Save password'}</button><p id="auth-message" class="form-error" role="status"></p></form>`);
+  document.getElementById('account-action').onsubmit = async event => {
+    event.preventDefault(); const form = event.target, button = form.querySelector('button'); button.disabled = true;
+    try {await completeAccountAction(action, {token, ...Object.fromEntries(new FormData(form))}); onAuthStateChanged(auth, boot);}
+    catch (error) {status(errorText(error)); button.disabled = false;}
+  };
 }

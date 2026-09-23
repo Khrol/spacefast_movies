@@ -3,44 +3,65 @@ import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {chromium, expect} from '@playwright/test';
 import {createApp, localDatabase, serve} from '../scripts/local-server.mjs';
-import {passwordHash} from '../server/auth.js';
+import {googleFixture} from './google-fixture.mjs';
 import {hash} from '../server/domain.js';
 const {db, binding} = await localDatabase();
+const google = await googleFixture();
 let server;
 let browser;
 before(async () => {
   await db.doc('settings/app').set({billingEnabled: false, publicRegistration: false});
   for (const name of ['author', 'wife', 'admin']) {
     const uid = `ui-${name}`, email = `ui-${name}@example.test`;
-    await db.doc(`accounts/${uid}`).set({id: uid, email, name, verified: true, admin: name === 'admin', password: await passwordHash('browser-test-2026'), sessionVersion: 'browser'});
-    await db.doc(`accountEmails/${hash(email)}`).set({uid});
+    await db.doc(`accounts/${uid}`).set({id: uid, email, name, googleSubject: `google-ui-${name}`, admin: name === 'admin', sessionVersion: 'browser'});
+    await db.doc(`googleAccounts/${hash(`google-ui-${name}`)}`).set({uid});
     await db.doc(`users/${uid}`).set({name, email, approved: true, complimentary: false, household_id: '', membership_epoch: uid, created_at: Date.now()});
   }
-  server = await serve(createApp({db, secrets: {local: true, ownerEmail: 'setup-owner@example.test', setupHash: hash('browser-setup-token')}}));
+  server = await serve(createApp({db, secrets: {local: true, googleClientId: google.clientId}, googleKeys: google.keys}));
   browser = await chromium.launch({headless: true, ...(process.env.REEL_BROWSER_CHANNEL ? {channel: process.env.REEL_BROWSER_CHANNEL} : process.platform === 'darwin' ? {channel: 'chrome'} : {})});
   await mkdir('test-results', {recursive: true});
 });
 after(async () => { await browser?.close(); await server?.close(); binding.close(); });
+async function googleBrowser(page, who) {
+  await page.exposeFunction('fixtureGoogleToken', nonce => google.token(nonce, {sub: `google-ui-${who}`, email: `ui-${who}@example.test`, name: who}));
+  await page.route('https://accounts.google.com/gsi/client', route => route.fulfill({contentType: 'text/javascript', body: `
+    let config;
+    window.google = {accounts: {id: {
+      initialize(value) {config = value;},
+      renderButton(container) {
+        const button = document.createElement('button'); button.textContent = 'Continue with Google';
+        button.onclick = async () => config.callback({credential: await window.fixtureGoogleToken(config.nonce)});
+        container.append(button);
+      },
+      disableAutoSelect() {},
+    }}};
+  `}));
+}
 async function login(page, who) {
+  await googleBrowser(page, who);
   await page.goto(server.base);
-  await page.locator('#auth-form').getByLabel('Email', {exact: true}).fill(`ui-${who}@example.test`);
-  await page.getByLabel('Password', {exact: true}).fill('browser-test-2026');
-  await page.getByRole('button', {name: 'Open my diary', exact: true}).click();
+  await page.getByRole('button', {name: 'Continue with Google', exact: true}).click();
   await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
 }
-test('owner setup links work after private-access navigation and open an empty diary', {timeout: 60000}, async () => {
+test('Google is the only sign-in and a new account opens an empty diary immediately', {timeout: 60000}, async () => {
   const context = await browser.newContext(), page = await context.newPage();
-  await page.goto(server.base);
-  await expect(page.getByRole('heading', {name: 'Come on in.'})).toBeVisible();
-  await page.goto(`${server.base}/#setup=browser-setup-token`);
-  await expect(page.getByRole('heading', {name: 'Your cinema starts here.'})).toBeVisible();
+  await googleBrowser(page, 'newcomer');
+  await page.goto(server.base + '/#setup=retired-secret');
+  await expect(page.getByRole('button', {name: 'Continue with Google', exact: true})).toBeVisible();
   assert.equal(new URL(page.url()).hash, '');
-  await page.getByLabel('Your name', {exact: true}).fill('Cinema owner');
-  await page.getByLabel('New password', {exact: true}).fill('new-owner-password-2026');
-  await page.getByRole('button', {name: 'Open my cinema'}).click();
+  await expect(page.locator('input[type=password], input[type=email]')).toHaveCount(0);
+  await expect(page.getByText('Request an invitation', {exact: true})).toHaveCount(0);
+  await page.screenshot({path: 'test-results/google-login-desktop.png', fullPage: true});
+  await page.setViewportSize({width: 390, height: 844});
+  await page.screenshot({path: 'test-results/google-login-mobile.png', fullPage: true});
+  await page.getByRole('button', {name: 'Continue with Google', exact: true}).click();
   await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
   await expect(page.locator('.movie-card')).toHaveCount(0);
-  await expect(page.getByRole('button', {name: 'Administration', exact: true})).toBeVisible();
+  await expect(page.getByRole('button', {name: 'Membership', exact: true})).toHaveCount(0);
+  await page.getByRole('button', {name: 'Sign out', exact: true}).click();
+  await expect(page.getByRole('button', {name: 'Continue with Google', exact: true})).toBeVisible();
+  await page.getByRole('button', {name: 'Continue with Google', exact: true}).click();
+  await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
   await context.close();
 });
 test('diary, household, consent sharing, account revocation, and mobile layout work in the browser', {timeout: 120000}, async () => {
@@ -88,25 +109,20 @@ test('diary, household, consent sharing, account revocation, and mobile layout w
   await page.evaluate(() => scrollTo(0, 0));
   await page.screenshot({path: 'test-results/diary-mobile.png', fullPage: true});
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Mobile layout should not overflow horizontally');
-  await page.getByRole('button', {name: 'Membership', exact: true}).click();
-  await expect(page.getByRole('heading', {name: 'Reel Together membership'})).toBeVisible();
+  await expect(page.getByRole('button', {name: 'Membership', exact: true})).toHaveCount(0);
   await page.getByRole('button', {name: /Film diary/}).click();
   await expect(page.locator('.movie-card')).toHaveCount(1);
   assert.deepEqual(errors, []);
   await context.close(); await other.close();
 });
-test('owner can review invitations and grant account access from administration', {timeout: 60000}, async () => {
+test('administration lists accounts without approval or payment controls', {timeout: 60000}, async () => {
   const context = await browser.newContext(), page = await context.newPage();
   await login(page, 'admin');
   await page.getByRole('button', {name: 'Administration', exact: true}).click();
   await expect(page.getByRole('heading', {name: 'Accounts', exact: true})).toBeVisible();
-  await page.getByLabel('Approve an email address').fill('future@example.test');
-  await page.locator('#approve-email').getByRole('button', {name: 'Approve email', exact: true}).click();
-  await expect(page.locator('#admin-message')).toHaveText('Email approved.');
-  const form = page.locator('form[data-user-id="ui-wife"]');
-  await form.getByLabel('Complimentary membership').check();
-  await form.getByRole('button', {name: 'Save account'}).click();
-  await expect(page.locator('#admin-message')).toHaveText('Saved.');
-  assert.equal((await db.doc('users/ui-wife').get()).data().complimentary, true);
+  await expect(page.locator('#screen')).toContainText('ui-newcomer@example.test');
+  await expect(page.locator('#screen input, #screen form')).toHaveCount(0);
+  await expect(page.locator('#screen')).not.toContainText('Stripe');
+  await expect(page.locator('#screen')).not.toContainText('membership');
   await context.close();
 });

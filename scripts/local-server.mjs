@@ -31,6 +31,8 @@ export function serve(app, {port = 0, staticRoot = resolve('dist')} = {}) {
     try {
       const url = new URL(req.url, `http://127.0.0.1:${server.address().port}`);
       if (!url.pathname.startsWith('/api/')) {
+        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+        res.setHeader('Referrer-Policy', 'no-referrer-when-downgrade');
         const requested = resolve(staticRoot, '.' + decodeURIComponent(url.pathname));
         if (requested !== staticRoot && !requested.startsWith(staticRoot + sep)) {res.writeHead(403).end(); return;}
         const path = url.pathname === '/' ? resolve(staticRoot, 'index.html') : requested;
@@ -43,7 +45,9 @@ export function serve(app, {port = 0, staticRoot = resolve('dist')} = {}) {
       }
       const request = new Request(url, {method: req.method, headers: req.headers, ...(['GET', 'HEAD'].includes(req.method) ? {} : {body: Readable.toWeb(req), duplex: 'half'})});
       const response = await app.fetch(request);
-      res.writeHead(response.status, Object.fromEntries(response.headers));
+      const headers = Object.fromEntries(response.headers); delete headers['set-cookie'];
+      if (response.headers.getSetCookie().length) headers['set-cookie'] = response.headers.getSetCookie();
+      res.writeHead(response.status, headers);
       res.end(Buffer.from(await response.arrayBuffer()));
     } catch {res.writeHead(500).end('Local server failed');}
   });

@@ -1,23 +1,20 @@
 import test, {before, after} from 'node:test';
 import assert from 'node:assert/strict';
 import {createApp, localDatabase, serve} from '../scripts/local-server.mjs';
-import {Billing} from '../server/billing.js';
 import {Catalog} from '../server/catalog.js';
 import {hash, newId} from '../server/domain.js';
-import {StripeFixture} from './stripe-fixture.mjs';
 
 const {db, binding} = await localDatabase();
-const stripe = new StripeFixture(), secrets = {origin: 'https://films.example.test', local: true, kinopoiskToken: 'fixture', stripe: {test: {secretKey: 'sk_test_fixture'}, live: {secretKey: 'sk_live_fixture'}}};
-const billing = new Billing(db, secrets, stripe.factory);
+const secrets = {origin: 'https://films.example.test', local: true, kinopoiskToken: 'fixture'};
 const catalog = new Catalog(db, secrets, async url => new Response(JSON.stringify(url.pathname === '/api/v2.2/films/430' ? {kinopoiskId: 430, nameRu: 'Шрек', year: 2001, imdbId: 'tt0126029', ratingKinopoisk: 8, ratingImdb: 7.9, posterUrl: 'https://kinopoiskapiunofficial.tech/images/posters/kp/430.jpg'} : {items: [{kinopoiskId: 430, nameRu: 'Шрек', year: 2001, imdbId: 'tt0126029', ratingKinopoisk: 8}]}), {status: 200, headers: {'Content-Type': 'application/json'}}));
 let server, base;
 const tokens = {};
 async function user(key, {admin = false, verified = true, approved = true} = {}) {
   const uid = `test-${key}`, address = `${key}@example.test`;
-  await db.doc(`accounts/${uid}`).set({id: uid, email: address, name: key, verified, admin, sessionVersion: 'v1'});
+  await db.doc(`accounts/${uid}`).set({id: uid, email: address, name: key, googleSubject: verified ? `google-${uid}` : null, admin, sessionVersion: 'v1'});
   await db.doc(`users/${uid}`).set({name: key, email: address, approved, complimentary: false, household_id: '', membership_epoch: uid, created_at: Date.now()});
   const token = newId() + newId();
-  await db.doc(`authSessions/${hash(token)}`).set({uid, version: 'v1', expiresAt: Date.now() + 3600000});
+  await db.doc(`authSessions/${hash(token)}`).set({uid, version: 'v1', provider: verified ? 'google' : 'password', subject: `google-${uid}`, expiresAt: Date.now() + 3600000});
   tokens[key] = token; return uid;
 }
 async function call(who, route, method = 'GET', body, headers = {}) {
@@ -26,29 +23,23 @@ async function call(who, route, method = 'GET', body, headers = {}) {
 }
 async function ok(who, route, method = 'GET', body, expected = 200) { const result = await call(who, route, method, body); assert.equal(result.status, expected, JSON.stringify(result.data)); return result.data; }
 const viewing = (title = 'A private film', more = {}) => ({movie: {title, year: 2001}, status: 'watched', scope: 'personal', watched_on: '2024-01-01', notes: 'Private notes', ...more});
-async function hook(uid, mode = 'live', changes = {}, timestamp) {
-  const {payload, signature} = stripe.webhook(uid, mode, changes, timestamp);
-  const response = await fetch(`${base}/api/billing/webhook/${mode}`, {method: 'POST', headers: {'Content-Type': 'application/json', 'Stripe-Signature': signature}, body: payload});
-  return {status: response.status, data: await response.json()};
-}
 before(async () => {
-  await db.doc('settings/app').set({billingEnabled: false, publicRegistration: false});
-  server = await serve(createApp({db, secrets, catalog, billing})); base = server.base;
+  await db.doc('settings/app').set({billingEnabled: true, publicRegistration: false});
+  server = await serve(createApp({db, secrets, catalog})); base = server.base;
   await user('owner', {admin: true}); await user('author'); await user('wife'); await user('third'); await user('outsider'); await user('unverified', {verified: false}); await user('pending', {approved: false});
 });
 after(async () => { await server.close(); binding.close(); });
 
-test('authentication, approval, and direct database isolation are enforced', async () => {
+test('Google sessions are required, everyone has access, and administration stays private', async () => {
   assert.equal((await call(null, 'entries')).status, 401);
   assert.equal((await call('forged-token', 'entries')).status, 401);
-  assert.equal((await call('unverified', 'session')).status, 403);
-  assert.equal((await ok('pending', 'session')).approved, false);
-  assert.equal((await call('pending', 'entries')).status, 403);
+  assert.equal((await call('unverified', 'session')).status, 401);
+  assert.equal((await call('pending', 'entries')).status, 200);
   assert.equal((await call('author', 'admin/overview')).status, 403);
-  await ok('owner', 'admin/approve-email', 'POST', {email: 'pending@example.test'});
-  assert.equal((await ok('pending', 'session')).approved, true);
   assert.equal((await call('author', 'database')).status, 404);
   assert.equal((await call('author', 'admin/users')).status, 403);
+  assert.equal((await call('owner', 'admin/users')).status, 200);
+  for (const path of ['billing/checkout', 'billing/portal', 'billing/webhook/live', 'membership', 'admin/approve-email', 'admin/settings', 'admin/billing/enable', 'invitations']) assert.equal((await call('owner', path, 'POST', {})).status, 404, path);
 });
 test('private entries, validation, repeat viewings, and watchlist race protection', async () => {
   const entry = await ok('author', 'entries', 'POST', viewing(), 201);
@@ -120,63 +111,4 @@ test('companion sharing needs consent, cannot leak to household peers, and revok
   assert.equal((await ok('wife', 'entries')).total, 0);
   assert.equal((await call('wife', 'household/join', 'POST', invitation)).status, 400);
   assert.equal((await call('author', 'household/membership', 'DELETE')).status, 400);
-});
-test('invitation requests deduplicate without exposing contact data and require admin moderation', async () => {
-  await ok(null, 'invitations', 'POST', {name: 'Guest', email: 'guest@example.test'});
-  await ok(null, 'invitations', 'POST', {name: 'Overwrite', email: 'guest@example.test'});
-  const list = await ok('owner', 'admin/invitations');
-  assert.equal(list.items.length, 1); assert.equal(list.items[0].name, 'Guest');
-  assert.equal((await call('author', 'admin/invitations')).status, 403);
-  await ok('owner', `admin/invitations/${list.items[0].id}`, 'PUT', {status: 'handled'});
-  await ok('owner', `admin/invitations/${list.items[0].id}`, 'DELETE');
-  assert.equal((await ok('owner', 'admin/invitations')).items.length, 0);
-});
-test('billing verifies test proof, isolates live accounts, rejects forged webhooks, and retains diary data', async () => {
-  await user('payer'); await user('otherpayer');
-  await ok('payer', 'entries', 'POST', viewing('Retained diary'), 201);
-  assert.equal((await call('payer', 'billing/checkout', 'POST', {mode: 'test'})).status, 403);
-  await ok('owner', 'admin/billing/setup', 'POST', {mode: 'test'}); await ok('owner', 'admin/billing/setup', 'POST', {mode: 'live'});
-  assert.equal((await call('owner', 'admin/billing/enable', 'POST', {enabled: true})).status, 400);
-  await ok('owner', 'billing/checkout', 'POST', {mode: 'test'});
-  const testSession = stripe.complete('test-owner', 'test');
-  await ok('owner', 'billing/return', 'POST', {mode: 'test', session_id: testSession.id});
-  assert.equal((await call('owner', 'admin/billing/enable', 'POST', {enabled: true})).status, 400);
-  assert.equal((await hook('test-owner', 'test')).status, 200);
-  await ok('owner', 'admin/billing/enable', 'POST', {enabled: true});
-  assert.equal((await call('payer', 'entries')).status, 402);
-  await ok('owner', 'entries');
-  assert.equal((await call('payer', 'admin/users/test-payer', 'PUT', {complimentary: true})).status, 403);
-  await ok('owner', 'admin/users/test-payer', 'PUT', {complimentary: true}); await ok('payer', 'entries');
-  assert.equal((await call('payer', 'billing/checkout', 'POST', {})).status, 409);
-  await ok('owner', 'admin/users/test-payer', 'PUT', {complimentary: false});
-  const first = await ok('payer', 'billing/checkout', 'POST', {user_id: 'test-otherpayer', price: 'price_wrong', quantity: 10, return_url: 'https://evil.example'});
-  const second = await ok('payer', 'billing/checkout', 'POST', {}); assert.equal(first.url, second.url);
-  const checkouts = stripe.calls.filter(c => c.mode === 'live' && c.type === 'checkout');
-  assert.equal(checkouts.length, 1); assert.equal(checkouts[0].body.client_reference_id, 'test-payer'); assert.equal(checkouts[0].body.line_items[0].quantity, 1); assert.equal(checkouts[0].body.line_items[0].price, 'price_live'); assert.ok(checkouts[0].body.success_url.startsWith('https://films.example.test/'));
-  const row = (await db.doc('billingAccounts/live_test-payer').get()).data();
-  assert.equal((await call('otherpayer', 'billing/return', 'POST', {session_id: row.checkout_id})).status, 403);
-  assert.equal((await call('payer', 'billing/return', 'POST', {session_id: row.checkout_id})).status, 403);
-  assert.equal((await call(null, 'billing/webhook/live', 'POST', {})).status, 400);
-  stripe.complete('test-payer');
-  assert.equal((await hook('test-payer', 'live', {}, Math.floor(Date.now() / 1000) - 600)).status, 400);
-  assert.equal((await hook('test-payer', 'live', {livemode: false})).status, 400);
-  assert.equal((await hook('test-payer')).status, 200);
-  assert.equal((await ok('payer', 'entries')).items[0].title, 'Retained diary');
-  assert.equal((await call('otherpayer', 'entries')).status, 402);
-  assert.equal((await call('payer', 'billing/checkout', 'POST', {})).status, 409);
-  await ok('payer', 'billing/portal', 'POST', {customer: 'cus_fake'});
-  assert.equal(stripe.calls.filter(c => c.type === 'portal').at(-1).body.customer, row.customer_id);
-  const sub = stripe.subscription('test-payer'); sub.cancel_at_period_end = true;
-  await hook('test-payer'); assert.equal((await ok('payer', 'membership')).state, 'ending');
-  sub.status = 'past_due'; sub.latest_invoice.status = 'open'; await hook('test-payer');
-  assert.equal((await call('payer', 'entries')).status, 402); await ok('payer', 'billing/portal', 'POST', {});
-  sub.status = 'active'; sub.latest_invoice.status = 'paid'; await hook('test-payer'); await ok('payer', 'entries');
-  sub.status = 'canceled'; await hook('test-payer'); await hook('test-payer'); assert.equal((await call('payer', 'entries')).status, 402);
-  assert.equal((await ok('payer', 'membership')).can_subscribe, true, 'Canceled members can subscribe again even when they already have a Stripe customer');
-  sub.status = 'active'; sub.items.data[0].current_period_end = Math.floor(Date.now() / 1000) - 1; await hook('test-payer'); assert.equal((await call('payer', 'entries')).status, 402);
-  stripe.fail = true; assert.equal((await hook('test-payer')).status, 503); stripe.fail = false;
-  const summary = JSON.stringify(await ok('owner', 'admin/overview')); assert.ok(!summary.includes('sk_live') && !summary.includes('whsec_'));
-  assert.ok(!JSON.stringify(await ok('payer', 'membership')).includes('cus_'));
-  await ok('owner', 'admin/billing/enable', 'POST', {enabled: false});
-  assert.equal((await ok('payer', 'entries')).total, 1);
 });

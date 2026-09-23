@@ -1,4 +1,3 @@
-export const useEmulators = import.meta.env.DEV;
 export const auth = {currentUser: null};
 export async function api(path, method = 'GET', body) {
   const response = await fetch(`/api/${path}`, {method, credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, cache: 'no-store', body: body === undefined ? undefined : JSON.stringify(body)});

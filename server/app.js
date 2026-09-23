@@ -1,18 +1,16 @@
 import {Hono} from 'hono';
-import {Auth, createMailer} from './auth.js';
-import {AppError, fail, hash, text, email, bool, choice, id} from './domain.js';
+import {Auth} from './auth.js';
+import {AppError, fail, hash, id} from './domain.js';
 import {Catalog} from './catalog.js';
 import {DiaryStore, row} from './store.js';
-import {Billing} from './billing.js';
 
-export function createApp({db, secrets = {}, catalog = new Catalog(db, secrets), billing = new Billing(db, secrets), mailer = createMailer(secrets)}) {
-  const app = new Hono(), router = new Hono(), store = new DiaryStore(db, catalog), auth = new Auth(db, secrets, mailer);
+export function createApp({db, secrets = {}, catalog = new Catalog(db, secrets), googleKeys}) {
+  const app = new Hono(), router = new Hono(), store = new DiaryStore(db, catalog), auth = new Auth(db, secrets, googleKeys);
   router.use('*', async (c, next) => {
     c.header('Cache-Control', 'private, no-store, max-age=0');
     c.header('X-Content-Type-Options', 'nosniff');
     c.set('ip', c.req.header('CF-Connecting-IP') || 'unknown');
-    const webhook = c.req.path.startsWith('/api/billing/webhook/');
-    if (!['GET', 'HEAD'].includes(c.req.method) && !webhook) {
+    if (!['GET', 'HEAD'].includes(c.req.method)) {
       const origin = c.req.header('Origin');
       const expected = secrets.origin || new URL(c.req.url).origin;
       if (origin !== expected || c.req.header('Sec-Fetch-Site') === 'cross-site') fail('This request did not come from your diary.', 403);
@@ -20,17 +18,14 @@ export function createApp({db, secrets = {}, catalog = new Catalog(db, secrets),
     }
     if (!['GET', 'HEAD'].includes(c.req.method)) {
       const raw = await c.req.text();
-      if (new TextEncoder().encode(raw).length > (webhook ? 512 * 1024 : 32 * 1024)) fail('Request too large.', 413);
-      if (!webhook) {
-        let parsed; try { parsed = raw === '' && c.req.method === 'DELETE' ? {} : JSON.parse(raw); } catch { fail('Send valid JSON.'); }
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) fail('Send a JSON object.');
-        c.set('body', parsed);
-      }
+      if (new TextEncoder().encode(raw).length > 32 * 1024) fail('Request too large.', 413);
+      let parsed; try { parsed = raw === '' && c.req.method === 'DELETE' ? {} : JSON.parse(raw); } catch { fail('Send valid JSON.'); }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) fail('Send a JSON object.');
+      c.set('body', parsed);
     }
     await next();
   });
   auth.routes(router);
-  router.post('/billing/webhook/:mode', async c => c.json(await billing.webhook(choice(c.req.param('mode'), ['test', 'live']), await c.req.text(), c.req.header('Stripe-Signature'))));
   const routes = adapter(router);
   const limit = async (key, count, seconds) => {
     const now = Date.now(), bucket = Math.floor(now / (seconds * 1000));
@@ -42,78 +37,29 @@ export function createApp({db, secrets = {}, catalog = new Catalog(db, secrets),
     });
   };
   routes.get('/health', (_req, res) => res.json({ok: true}));
-  routes.get('/config', async (_req, res) => {
-    const settings = await store.settings();
-    res.json({public_registration: settings.publicRegistration === true, billing_enabled: settings.billingEnabled === true});
-  });
-  routes.post('/invitations', async (req, res) => {
-    await limit(`invitation:${req.ip}`, 5, 3600);
-    if (req.body?.website) return res.json({received: true});
-    const name = text(req.body?.name, 100, true), address = email(req.body?.email);
-    await db.runTransaction(async tx => {
-      const ref = db.doc(`invitations/${hash(address)}`);
-      const old = await tx.get(ref);
-      if (!old.exists) tx.create(ref, {name, email: address, status: 'pending', created_at: Date.now(), updated_at: Date.now()});
-    });
-    res.json({received: true});
-  });
+  routes.get('/config', (_req, res) => res.json({auth_provider: 'google', google_configured: !!secrets.googleClientId}));
+  router.all('/billing/*', c => c.json({message: 'Not found.'}, 404));
+  router.all('/membership', c => c.json({message: 'Not found.'}, 404));
+  router.all('/invitations', c => c.json({message: 'Not found.'}, 404));
   router.use('*', async (c, next) => {
     const account = await auth.require(c);
-    if (!account.verified) fail('Verify your email address before opening your diary.', 403);
-    c.set('user', await store.profile({uid: account.id, email: account.email, name: account.name, email_verified: account.verified, admin: account.admin}));
+    c.set('user', await store.profile({uid: account.id, email: account.email, name: account.name, admin: account.admin}));
     await next();
   });
   routes.get('/session', (req, res) => {
-    const u = req.user; res.json({id: u.id, name: u.name, email: u.email, approved: u.approved, admin: u.admin});
+    const u = req.user; res.json({id: u.id, name: u.name, email: u.email, admin: u.admin});
   });
   router.use('*', async (c, next) => { await limit(`api:${c.get('user').id}`, 240, 60); await next(); });
-  routes.get('/membership', async (req, res) => res.json(await billing.status(req.user)));
-  routes.post('/billing/checkout', async (req, res) => res.json(await billing.checkout(req.user, req.body?.mode || 'live')));
-  routes.post('/billing/portal', async (req, res) => res.json(await billing.portal(req.user, req.body?.mode || 'live')));
-  routes.post('/billing/return', async (req, res) => res.json(await billing.returned(req.user, req.body?.mode || 'live', req.body?.session_id)));
   const adminRouter = new Hono(), admin = adapter(adminRouter);
   adminRouter.use('*', async (c, next) => { if (!c.get('user').admin) fail('Only the site administrator can do this.', 403); await next(); });
-  admin.get('/overview', async (_req, res) => {
-    const settings = await store.settings();
-    res.json({settings: {public_registration: settings.publicRegistration === true, billing_enabled: settings.billingEnabled === true}, catalog_providers: catalog.providers(), billing: await billing.summary()});
-  });
+  admin.get('/overview', async (_req, res) => res.json({catalog_providers: catalog.providers()}));
   admin.get('/users', async (req, res) => {
     let query = db.collection('users').orderBy('__name__').limit(50);
     if (req.query.after) query = query.startAfter(id(req.query.after));
     const result = await query.get();
-    res.json({items: result.docs.map(s => { const u = row(s); return {id: u.id, name: u.name, email: u.email, approved: u.approved, complimentary: u.complimentary}; }), next: result.size === 50 ? result.docs.at(-1).id : null});
+    res.json({items: result.docs.map(s => { const u = row(s); return {id: u.id, name: u.name, email: u.email}; }), next: result.size === 50 ? result.docs.at(-1).id : null});
   });
-  admin.put('/users/:id', async (req, res) => {
-    const ref = db.doc(`users/${id(req.params.id)}`), update = {};
-    if ('approved' in req.body) update.approved = bool(req.body.approved);
-    if ('complimentary' in req.body) update.complimentary = bool(req.body.complimentary);
-    if (!Object.keys(update).length) fail('Choose an account setting to update.');
-    if (!(await ref.get()).exists) fail('Account not found.', 404);
-    await ref.update(update); res.json({updated: true});
-  });
-  admin.get('/invitations', async (req, res) => {
-    let query = db.collection('invitations').orderBy('__name__').limit(50);
-    if (req.query.after) query = query.startAfter(id(req.query.after));
-    const result = await query.get(); res.json({items: result.docs.map(row), next: result.size === 50 ? result.docs.at(-1).id : null});
-  });
-  admin.put('/invitations/:id', async (req, res) => {
-    const status = choice(req.body.status, ['pending', 'handled', 'declined']);
-    await db.doc(`invitations/${id(req.params.id)}`).update({status, updated_at: Date.now()}); res.json({updated: true});
-  });
-  admin.delete('/invitations/:id', async (req, res) => { await db.doc(`invitations/${id(req.params.id)}`).delete(); res.json({deleted: true}); });
-  admin.post('/approve-email', async (req, res) => {
-    const address = email(req.body.email), batch = db.batch();
-    batch.set(db.doc(`approvedEmails/${hash(address)}`), {approved_at: Date.now()});
-    const users = await db.collection('users').where('email', '==', address).get();
-    for (const user of users.docs) batch.update(user.ref, {approved: true});
-    await batch.commit(); res.json({approved: true});
-  });
-  admin.put('/settings', async (req, res) => { await db.doc('settings/app').set({publicRegistration: bool(req.body.public_registration)}, {merge: true}); res.json({updated: true}); });
-  admin.post('/billing/setup', async (req, res) => res.json(await billing.setup(req.body.mode)));
-  admin.post('/billing/enable', async (req, res) => res.json(await billing.enable(req.body.enabled)));
   router.route('/admin', adminRouter);
-  router.use('*', async (c, next) => { if (!c.get('user').approved && !c.get('user').admin) fail('Your account is waiting for the site owner’s approval.', 403); await next(); });
-  router.use('*', async (c, next) => { if (!(await billing.status(c.get('user'))).access) fail('An active membership is required. Open Membership to subscribe or manage billing.', 402); await next(); });
   routes.get('/bootstrap', async (req, res) => res.json(await store.bootstrap(req.user.id)));
   routes.get('/entries', async (req, res) => res.json(await store.entries(req.user.id, req.query)));
   routes.post('/entries', async (req, res) => res.status(201).json(await store.saveEntry(req.user.id, req.body)));

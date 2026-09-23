@@ -1,6 +1,7 @@
 {
   "$schema": "https://spacefast.com/schemas/sf.json",
   "name": "Reel Together",
+  "access": "public",
   "runtime": {
     "kind": "functions",
     "database": true,

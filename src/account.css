@@ -1,23 +1,14 @@
 body { margin: 0; background: #faf8f2; color: #243b35; }
 button, input, select, textarea { font: inherit; }
 [hidden] { display: none !important; }
-.login-card input:not([type=checkbox]), .login-card button.primary { width: 100%; box-sizing: border-box; }
-.login-card label { display: block; margin: 14px 0 7px; }
+.login-card button.primary { width: 100%; box-sizing: border-box; }
 .login-card .text-button { margin-top: 16px; }
-.login-card .signup .text-button { margin-top: 0; }
-.login-card form button[type=submit] { margin-top: 20px; }
-.invitation-request { margin-top: 25px; border-top: 1px solid #dfe4d9; padding-top: 18px; }
-.honeypot { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
 .account .text-button { display: block; margin-top: 4px; }
-.sidebar > .manage-invitations { text-align: left; margin-top: 10px; }
+.sidebar > .account-link { text-align: left; margin-top: 10px; }
 .household-card + .household-card { margin-top: 24px; }
-.admin-list article, .admin-list .user-settings { padding: 20px 0; border-bottom: 1px solid #dfe4d9; }
+.admin-list article { padding: 20px 0; border-bottom: 1px solid #dfe4d9; }
 .admin-list h3 { margin: 0; }
-.admin-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; }
-#approve-email { margin: 24px 0; }
-#toggle-billing { margin-top: 24px; }
-#admin-message:empty, #membership-message:empty { display: none; }
-@media (max-width: 600px) { .admin-actions { align-items: stretch; flex-direction: column; } .admin-actions > button { width: 100%; } .login-card { min-width: 0; } }
+@media (max-width: 600px) { .login-card { min-width: 0; } }
 @media (min-width: 801px) {
   .sidebar { align-self: start; overflow-y: auto; }
   .sidebar > * { flex-shrink: 0; }
@@ -28,3 +19,5 @@ button, input, select, textarea { font: inherit; }
   .sidebar-note > span, .sidebar-note small { display: none; }
   .sidebar-note p { font-size: 20px; }
 }
+
+.google-signin{min-height:44px;margin:24px 0 12px;max-width:100%}

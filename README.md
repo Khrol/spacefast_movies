@@ -1,19 +1,39 @@
 # Reel Together · Spacefast
 
-The movie diary from [Khrol/movies](https://github.com/Khrol/movies), ported to Spacefast Functions and its built-in database. The original interface, private diaries, repeat viewings, ratings, notes, watchlists, household invitations, explicit companion sharing, administration, catalog search and optional Stripe memberships are retained. Firebase is not used at runtime or for development.
+The movie diary from [Khrol/movies](https://github.com/Khrol/movies), running on Spacefast Functions and its database. Sign in with Google to get a free, private diary immediately. There are no passwords, approval gates, payments, or subscriptions. The original diaries, repeat viewings, ratings, notes, watchlists, household invitations, companion sharing and catalog search are retained.
+
+## Google sign-in setup
+
+Google Identity Services needs a **Web application** OAuth client owned by the operator. It uses a public client ID; this app does not need a client secret or access to Google APIs beyond basic identity.
+
+In a normal browser, open [Google Auth Platform](https://console.cloud.google.com/auth/overview):
+
+1. Create or select a project, for example **Reel Together**.
+2. Complete **Get started** with app name **Reel Together**, support/contact email **khroliz@gmail.com**, and audience **External**.
+3. Under **Clients → Create client**, choose **Web application** and name it **Reel Together Web**. Add these **Authorized JavaScript origins**, without trailing slashes:
+   - `https://reel-together.view.fast`
+   - `http://localhost`
+   - `http://localhost:9500`
+4. Leave redirect URIs empty: this app uses the Google button's popup callback.
+5. Under **Audience**, publish the app for external users so access is not limited to a test-user list. Request only the standard `openid`, `email`, and `profile` identity scopes.
+6. Set `GOOGLE_CLIENT_ID` to the resulting value ending in `.apps.googleusercontent.com`. Set `APP_ORIGIN=https://reel-together.view.fast` and `OWNER_EMAIL=khroliz@gmail.com`.
+
+Google can reject sign-in from an automated browser. Complete the Cloud Console setup in your normal browser in that case. See [Google's setup guide](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid).
+
+The first verified Google identity matching the configured owner email receives administrator access. Other users can start immediately and have no account-approval or payment step. Administration only lists accounts and catalog availability. Every user's diary stays private unless they explicitly share through a household or companion link.
 
 ## Run locally
 
-Node.js 22.13+ is required (Node 24+ recommended).
+Node.js 22.13+ is required. Create an ignored `.env.local` with `GOOGLE_CLIENT_ID` and, optionally, `OWNER_EMAIL` (see `.env.example`), then run:
 
 ```sh
 npm ci
 npm run dev
 ```
 
-Open http://127.0.0.1:9500. Local-only accounts are `owner@example.test`, `moviebuff@example.test` and `family@example.test`, with password `movie-night-2026`. Data persists in ignored `.local/diary.sqlite`. Restart after source edits. These accounts and their database are never deployed.
+Open **http://localhost:9500** and sign in with Google. Data persists in ignored `.local/diary.sqlite`; it never touches the hosted database. Restart after source edits. There are no local password accounts or authentication bypasses. Automated tests use a separate signing key and a simulated Google button, without changing the production verifier.
 
-This is the app's local development server, with the same API/authentication code and a SQLite database adapter. Spacefast's `sf dev` currently rejects Functions projects with `runtime_dev_unsupported`; it does not provide a Firebase-style emulator for this runtime. Hosted database and network behavior still need a check after deployment. See [Spacefast local development](https://spacefast.com/docs/cli/publish#sf-dev).
+This development server runs the same API/authentication code with a SQLite adapter. Spacefast's `sf dev` currently rejects Functions projects with `runtime_dev_unsupported`; hosted behavior must still be checked after deployment. See [Spacefast local development](https://spacefast.com/docs/cli/publish#sf-dev).
 
 ```sh
 npm test
@@ -21,59 +41,41 @@ npm run build
 npm run test:integration
 ```
 
-Tests cover session cookies, owner setup, verification and reset links, CSRF protection, transactional concurrency, per-account isolation, household/companion revocation, catalog metadata, and the Stripe lifecycle using mocked providers. Real-browser tests exercise diary editing, sharing, administration and mobile layout. On macOS they use installed Chrome; elsewhere install Playwright Chromium. Screenshots are in `test-results/`.
+Tests cover signed Google tokens, audience/issuer/expiry/nonce validation, replay and CSRF rejection, session invalidation, account migration, immediate registration, private data isolation, database concurrency, household/companion revocation, catalogs, and the removal of password/payment endpoints. Browser tests exercise Google sign-in/sign-out, new accounts, diary editing, sharing, administration and mobile layout. On macOS they use installed Chrome; elsewhere install Playwright Chromium. Screenshots are in `test-results/`.
 
 ## Publish to the existing Space
 
-Team: **Igor's Team** (`igor-team`). Existing Space: **Reel Together**, `spc_872d97161d58479abd7db5fb5dd719f6`, at https://composed-gravatar.view.fast/. The Space remains connected to `Khrol/spacefast_movies`. Automatic production and preview deployments are paused: the repository sync is stuck, and the current CLI config analyzer drops Functions outbound-fetch declarations. Use `npm run deploy` to publish to this existing Space.
+Team: **Igor's Team** (`igor-team`). Space: **Reel Together**, `spc_872d97161d58479abd7db5fb5dd719f6`, at https://reel-together.view.fast/. It remains connected to `Khrol/spacefast_movies`. Automatic Git deployments are paused because repository sync stalled and CLI 0.4.1's config analyzer drops Functions fetch declarations.
 
-1. Sign in using `npx sf login --api-url https://api.spacefast.com` or redeem a dashboard handoff through the hidden `--handoff` prompt. Do not put credentials in command arguments or Git.
-2. Link the existing Space using `npx sf link --space spc_872d97161d58479abd7db5fb5dd719f6 --api-url https://api.spacefast.com`. Alternatively the local non-secret `.spacefast/space.json` is `{ "space": "spc_872d97161d58479abd7db5fb5dd719f6" }`.
-3. Configure the server variables below in the Spacefast dashboard or with `sf env set NAME --value-from-stdin --space <space-id> --api-url https://api.spacefast.com`. Secret values should remain write-only. Variables take effect when a version finalizes.
-4. Run `npm run deploy`. This builds an explicit `dist/` allowlist and packages it with `sf build`. The package script carries the database and fetch declarations from `sf.jsonc` into the supported Functions artifact metadata before publishing the archive. The file router sends only `/api/*` to the worker; all other assets are static. Server source, environment files, local data and dependencies are not served.
-5. Follow the publish receipt's private access URL. Verify the version is ready and is the Space's live version, then check `/api/health`, the sign-in page, and owner setup. A private bare URL can return 403 without the receipt's browser access cookie.
+1. Sign in using `npx sf login --api-url https://api.spacefast.com`. Keep account credentials out of Git.
+2. Link the existing Space with `npx sf link --space spc_872d97161d58479abd7db5fb5dd719f6 --api-url https://api.spacefast.com`.
+3. Configure the variables below in Spacefast. For a file import, use `sf env import .env.server --secret --space <space-id> --api-url https://api.spacefast.com`. Variables take effect when a version finalizes. Remove obsolete owner-setup, mail and payment variables after switching to Google-only authentication.
+4. Run `npm run deploy`. It builds `dist/`, packages the Functions worker, and publishes the archive to the linked Space. Do not activate the Google-only release until a real client ID and authorized origins are configured.
+5. Confirm the receipt's version is ready and live. Open the site in a fresh browser without a Spacefast access cookie, check the Google button and complete Google sign-in. Check `/api/health`, verify anonymous diary requests return 401, and verify the runtime reports `db: true` and `fetch: true`.
 
-The CLI 0.4.1 packaging workaround is in `scripts/package.mjs`. The compiled archive omits the runtime block so a prebuilt publish does not attempt to compile already-packaged Functions a second time. It keeps the exact bundle digest and route table produced by `sf build`. Do not publish `dist/` directly or re-enable Git deployments until the platform handles both capabilities correctly; verify the resulting version reports `db: true` and `fetch: true` first.
+`sf.jsonc` makes the site publicly reachable so everyone can reach Google sign-in. The API still requires a verified Google session for diary data. Only `/api/*` reaches the worker; other assets are static. Server source, environment files, dependencies and local data are excluded from the publish.
 
-## Owner setup and server variables
+The CLI packaging workaround is in `scripts/package.mjs`. It copies the declared database/fetch capabilities into the supported Functions artifact metadata while retaining the exact compiled bundle digest and routes. The archive omits the runtime block so prebuilt publication does not compile the worker again. Use `npm run deploy`, not a direct publish of `dist/`, until the platform handles both declarations correctly.
 
-Set `OWNER_EMAIL=owner@example.com` and `APP_ORIGIN` to the exact HTTPS origin returned by Spacefast. Generate a cryptographically random 32-byte hex setup token, set `OWNER_SETUP_HASH` to its SHA-256 hash, and keep the token private. The owner opens `/#setup=<token>` after passing the Space access gate and chooses their own password. Setup is single-use, transactionally recorded, and cannot be claimed by an ordinary registrant. The setup token is removed from the address bar before displaying the form. Remove the setup hash variable after completing setup.
+## Server variables
 
 | Variable | Purpose |
 | --- | --- |
-| `APP_ORIGIN` | Canonical HTTPS app origin; CSRF and email/Stripe return URLs |
-| `OWNER_EMAIL`, `OWNER_SETUP_HASH` | One-time owner bootstrap |
-| `RESEND_API_KEY`, `MAIL_FROM` | Verified sender for account verification and reset emails |
-| `KINOPOISK_TOKEN`, `TMDB_TOKEN` | Optional server-only catalog credentials |
-| `STRIPE_TEST_SECRET_KEY`, `STRIPE_LIVE_SECRET_KEY` | Optional Stripe connections |
-| `STRIPE_AUTOMATIC_TAX` | `true` to enable Stripe automatic tax |
+| `APP_ORIGIN` | Exact canonical HTTPS origin for same-origin write checks |
+| `GOOGLE_CLIENT_ID` | OAuth Web application client ID used by the button and server verifier |
+| `OWNER_EMAIL` | Google-hosted owner email for initial administrator assignment |
+| `KINOPOISK_TOKEN`, `TMDB_TOKEN` | Optional catalog credentials; manual movie entry works without them |
 
-The Functions contract exposes the database and outbound fetch, but no documented native mail binding. Email verification/reset uses Resend. Without mail configuration, owner setup and existing-account login work, but new registrations and password-reset email are unavailable. Never silently treat an unverified registration as verified. Catalog keys are optional: manual movie entry works without them. Billing stays off until an administrator completes the existing test payment, signed webhook, live connection and enable sequence.
+## Authentication and existing data
 
-## Storage and authentication
+The backend verifies Google's RS256 signature, issuer, audience, expiry, issue time, verified email and a one-use nonce bound to the browser's HttpOnly cookie. Google subject IDs identify accounts, so changing an email does not create a different diary. Tokens and cookies never appear in URLs. Sessions last seven days and are stored as hashes in the database; production cookies are Secure, HttpOnly and SameSite=Lax. Sign-out revokes the current session.
 
-```
-Browser → Spacefast static frontend
-        → /api/* → Spacefast Functions → Spacefast database
-                                       → Kinopoisk / TMDB (optional)
-                                       → Stripe (optional)
-                                       → Resend (account emails)
-```
+Old password, verification, reset and owner-setup endpoints are removed, and password-era sessions are rejected. An existing verified account can be linked to Google by matching a Google-hosted email (Gmail or Workspace); its account ID, movies and sharing relationships are retained, and its password hash is removed. A non-Google-hosted email never automatically claims an old account: that Google identity gets a separate diary. No existing movie data is deleted, and old billing/approval settings have no effect on access.
 
-Passwords are salted scrypt hashes. Opaque sessions are stored as hashes, expire after seven days, and travel in Secure, HttpOnly, SameSite cookies. Password resets invalidate old sessions; verification/reset tokens expire after one hour and are single-use. Application writes validate same-origin requests. Approval and private-sharing rules run on the server.
+## Storage
 
-The Spacefast D1-shaped binding reaches a MySQL database through a broker. Since a series of broker calls is not a pinned SQL transaction, the adapter stores a JSON document snapshot in `reel_state`, with an atomic revision-checked update and retries. This preserves multi-document diary transactions, uniqueness and sharing revocation. State is capped at **8 MiB** and serialized for each write; this is intended for a small household, not a large multi-tenant service. Expired rate limits, sessions, tokens and catalog caches are cleaned on writes. The browser has no database credentials or direct database route.
+The Spacefast D1-shaped binding uses a MySQL broker. Since multiple broker calls are not a pinned SQL transaction, the adapter uses a revision-checked JSON snapshot in `reel_state`. Atomic updates and retries preserve multi-document transactions, uniqueness and sharing revocation. State is capped at **8 MiB** and serialized for each write; this remains a small-app store, even though signup is open. Expired rate limits, sessions, sign-in challenges and catalog caches are cleaned on writes.
 
-Use Spacefast's database console for backups of `reel_state`; Functions databases do not support the Zero-only `sf db export` command. A code rollback does not roll back diary data. Local SQLite validates the SQL and transactional adapter, while a hosted check must verify the actual Spacefast broker before calling the deployment ready.
-
-This is a new Spacefast installation. It does not automatically import existing Firebase accounts, password hashes, diaries or Stripe customer mappings. Such an import requires an authorized export and a separate migration; do not point the new app at an old Stripe webhook/customer mapping without reviewing that migration.
-
-## Source layout
-
-- `src/`: existing interface and same-origin authentication client.
-- `server/`: Web-standard API, database adapter, authentication, diaries, catalogs and billing.
-- `scripts/`: build, isolated local SQLite server and deployment.
-- `tests/`: unit, authentication, database, API and browser checks.
-- `sf.jsonc`: Spacefast Functions capabilities.
+Use Spacefast's database console to back up `reel_state`; Functions databases do not support the Zero-only `sf db export` command. Code rollback does not roll back data. Firebase is not used, and no Firebase data was imported.
 
 Interface and assets originate from the GPL-2.0-or-later Reel Together WordPress plugin in `Khrol/films`, via `Khrol/movies`. This port retains that license.

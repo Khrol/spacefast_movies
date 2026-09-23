@@ -5,15 +5,16 @@ const rows = snap => snap.docs.map(row);
 export class DiaryStore {
   constructor(db, catalog) { this.db = db; this.catalog = catalog; }
   ref(collection, key) { return this.db.collection(collection).doc(id(key)); }
-  async settings() { return (await this.db.doc('settings/app').get()).data() ?? {}; }
   async profile(token) {
     return this.db.runTransaction(async tx => {
       const ref = this.ref('users', token.uid);
       const existing = row(await tx.get(ref));
-      if (existing) return {...existing, admin: token.admin === true};
-      const settings = (await tx.get(this.db.doc('settings/app'))).data() ?? {};
-      const approval = token.email && token.email_verified ? (await tx.get(this.ref('approvedEmails', hash(token.email.toLowerCase())))).data() : null;
-      const profile = {name: String(token.name || token.email?.split('@')[0] || 'Movie lover').slice(0, 100), email: token.email?.toLowerCase() || '', approved: token.admin === true || settings.publicRegistration === true || !!approval, complimentary: false, household_id: '', membership_epoch: newId(), created_at: Date.now()};
+      if (existing) {
+        const {approved, complimentary, ...profile} = existing;
+        if (approved !== undefined || complimentary !== undefined || profile.email !== token.email) tx.set(ref, {...profile, email: token.email});
+        return {...profile, email: token.email, admin: token.admin === true};
+      }
+      const profile = {name: String(token.name || token.email?.split('@')[0] || 'Movie lover').slice(0, 100), email: token.email || '', household_id: '', membership_epoch: newId(), created_at: Date.now()};
       tx.create(ref, profile);
       return {...profile, id: token.uid, admin: token.admin === true};
     });

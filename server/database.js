@@ -78,7 +78,7 @@ export class Database {
       // The original Firebase TTL policies become write-time expiry collection.
       const now = Date.now();
       for (const [path, value] of Object.entries(tx.state)) {
-        if (/^(rateLimits|catalogCache|authSessions|authTokens)\//.test(path) && value.expiresAt && new Date(value.expiresAt).getTime() < now) delete tx.state[path];
+        if (/^(rateLimits|catalogCache|authSessions|authTokens|authChallenges)\//.test(path) && value.expiresAt && new Date(value.expiresAt).getTime() < now) delete tx.state[path];
       }
       const payload = JSON.stringify(tx.state);
       if (new TextEncoder().encode(payload).length > MAX_BYTES) fail('The diary storage limit has been reached. Contact the site owner.', 507);

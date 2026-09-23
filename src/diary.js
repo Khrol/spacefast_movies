@@ -335,7 +335,7 @@ export function mountDiary() {
         await api(leave ? 'household/membership' : `household/members/${button.dataset.removeMember}`, 'DELETE');
         await refresh();
       }
-    } catch (error) { if (error.status === 402) window.ReelViews.membership(); else toast(error.message); }
+    } catch (error) { toast(error.message); }
     finally { button.disabled = false; }
   });
   root.addEventListener('change', async event => {
@@ -378,7 +378,6 @@ export function mountDiary() {
     }
   });
   return refresh().catch(error => {
-    if (error.status === 402) { window.ReelViews.membership(); return; }
     screen.setAttribute('aria-busy', 'false');
     screen.innerHTML = `<div class="empty-state" role="alert"><h1>Let’s try that again.</h1><p>${escape(error.message)}</p><p>If your session expired, reload this page or sign in again.</p><button class="button secondary" data-retry>Try again</button></div>`;
   });

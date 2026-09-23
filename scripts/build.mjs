@@ -15,3 +15,4 @@ const config = JSON.parse(await readFile('sf.jsonc', 'utf8'));
 // package.mjs carries the capabilities in the typed Functions artifact metadata.
 delete config.runtime;
 await writeFile('dist/sf.jsonc', JSON.stringify(config, null, 2) + '\n');
+await writeFile('dist/_headers', '/*\n  Cross-Origin-Opener-Policy: same-origin-allow-popups\n  Referrer-Policy: strict-origin-when-cross-origin\n');

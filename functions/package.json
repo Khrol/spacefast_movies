@@ -1,0 +1,21 @@
+{
+  "name": "reel-together-functions",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "firebase-admin": "^14.4.0",
+    "firebase-functions": "^7.4.0",
+    "stripe": "^18.0.0"
+  },
+  "overrides": {
+    "gaxios": {
+      "uuid": "^11.1.1"
+    }
+  }
+}

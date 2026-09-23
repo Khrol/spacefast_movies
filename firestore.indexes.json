@@ -1,0 +1,4 @@
+{"indexes": [], "fieldOverrides": [
+  {"collectionGroup": "rateLimits", "fieldPath": "expiresAt", "ttl": true, "indexes": []},
+  {"collectionGroup": "catalogCache", "fieldPath": "expiresAt", "ttl": true, "indexes": []}
+]}

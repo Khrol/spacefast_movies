@@ -1,0 +1,14 @@
+import {initializeApp, applicationDefault} from 'firebase-admin/app';
+import {getAuth} from 'firebase-admin/auth';
+import {getFirestore} from 'firebase-admin/firestore';
+import {hash} from '../functions/src/domain.js';
+const args = process.argv.slice(2), get = flag => args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
+const project = get('--project'), address = get('--email');
+if (!project || !address || !args.includes('--grant-admin')) throw new Error('Usage: npm run admin -- --project PROJECT_ID --email YOUR_EMAIL --grant-admin');
+initializeApp({projectId: project, ...(process.env.FIREBASE_AUTH_EMULATOR_HOST ? {} : {credential: applicationDefault()})});
+const auth = getAuth(), db = getFirestore(), user = await auth.getUserByEmail(address);
+await auth.setCustomUserClaims(user.uid, {...user.customClaims, admin: true});
+await db.doc(`approvedEmails/${hash(user.email.toLowerCase())}`).set({approved_at: Date.now()});
+const ref = db.doc(`users/${user.uid}`);
+if ((await ref.get()).exists) await ref.update({approved: true});
+console.log('Administrator access granted. Sign out and back in to refresh the account token.');

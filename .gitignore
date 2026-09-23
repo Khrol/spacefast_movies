@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.local/
+.firebase/
+*-debug.log*
+.env
+.env.local
+.env.production
+functions/.env
+functions/.env.*
+functions/.secret.local
+test-results/
+playwright-report/
+*.service-account.json
+firebase-backup.json

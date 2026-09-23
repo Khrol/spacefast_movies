@@ -18,3 +18,7 @@ firebase-backup.json
 .env.*
 !.env.example
 *.sqlite*
+.spacefast/state.json
+/.spacefast-*
+.spacefast/.spacefast-*
+.spacefast/.space-link-*.tmp

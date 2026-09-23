@@ -16,7 +16,7 @@ before(async () => {
     await db.doc(`accountEmails/${hash(email)}`).set({uid});
     await db.doc(`users/${uid}`).set({name, email, approved: true, complimentary: false, household_id: '', membership_epoch: uid, created_at: Date.now()});
   }
-  server = await serve(createApp({db, secrets: {local: true}}));
+  server = await serve(createApp({db, secrets: {local: true, ownerEmail: 'setup-owner@example.test', setupHash: hash('browser-setup-token')}}));
   browser = await chromium.launch({headless: true, ...(process.env.REEL_BROWSER_CHANNEL ? {channel: process.env.REEL_BROWSER_CHANNEL} : process.platform === 'darwin' ? {channel: 'chrome'} : {})});
   await mkdir('test-results', {recursive: true});
 });
@@ -28,6 +28,21 @@ async function login(page, who) {
   await page.getByRole('button', {name: 'Open my diary', exact: true}).click();
   await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
 }
+test('owner setup links work after private-access navigation and open an empty diary', {timeout: 60000}, async () => {
+  const context = await browser.newContext(), page = await context.newPage();
+  await page.goto(server.base);
+  await expect(page.getByRole('heading', {name: 'Come on in.'})).toBeVisible();
+  await page.goto(`${server.base}/#setup=browser-setup-token`);
+  await expect(page.getByRole('heading', {name: 'Your cinema starts here.'})).toBeVisible();
+  assert.equal(new URL(page.url()).hash, '');
+  await page.getByLabel('Your name', {exact: true}).fill('Cinema owner');
+  await page.getByLabel('New password', {exact: true}).fill('new-owner-password-2026');
+  await page.getByRole('button', {name: 'Open my cinema'}).click();
+  await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
+  await expect(page.locator('.movie-card')).toHaveCount(0);
+  await expect(page.getByRole('button', {name: 'Administration', exact: true})).toBeVisible();
+  await context.close();
+});
 test('diary, household, consent sharing, account revocation, and mobile layout work in the browser', {timeout: 120000}, async () => {
   const context = await browser.newContext({viewport: {width: 1440, height: 1000}}), other = await browser.newContext();
   const page = await context.newPage(), wife = await other.newPage(), errors = [];

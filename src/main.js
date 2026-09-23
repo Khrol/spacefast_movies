@@ -7,7 +7,7 @@ import {mountDiary} from './diary.js';
 import {membership, administration} from './views.js';
 
 const root = document.getElementById('app');
-let publicConfig, bootVersion = 0;
+let publicConfig, bootVersion = 0, stopWatchingAuth;
 const errorText = error => ({'auth/invalid-credential': 'The email or password is incorrect.', 'auth/too-many-requests': 'Too many attempts. Please try again later.', 'auth/email-already-in-use': 'An account already uses this email. Try signing in or resetting your password.', 'auth/weak-password': 'Use a stronger password with at least 12 characters.', 'auth/network-request-failed': 'Could not connect. Check your connection and try again.'}[error.code] || error.message || 'Please try again.');
 function status(message) { const el = document.getElementById('auth-message'); if (el) el.textContent = message; }
 function login(mode = 'login') {
@@ -82,23 +82,34 @@ root.addEventListener('click', async event => {
 });
 try {
   await initializeAuth(); publicConfig = await api('config', 'GET', undefined, true);
-  const action = ['setup', 'verify', 'reset'].find(key => new URLSearchParams(location.hash.slice(1)).has(key));
-  if (action) {
-    const token = new URLSearchParams(location.hash.slice(1)).get(action);
-    history.replaceState(null, '', location.pathname + location.search);
-    accountAction(action, token);
-  } else onAuthStateChanged(auth, boot);
+  if (!openAccountAction()) watchAuth();
+  window.addEventListener('hashchange', openAccountAction);
 } catch (error) {
   root.innerHTML = welcome(`<h2>Let’s get things ready.</h2><p role="alert">${escape(errorText(error))}</p><button class="button primary" id="reload">Try again</button>`);
   document.getElementById('reload').onclick = () => location.reload();
 }
 
+function watchAuth() {
+  stopWatchingAuth?.();
+  stopWatchingAuth = onAuthStateChanged(auth, boot);
+}
+function openAccountAction() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const action = ['setup', 'verify', 'reset'].find(key => params.has(key));
+  if (!action) return false;
+  stopWatchingAuth?.();
+  ++bootVersion;
+  const token = params.get(action);
+  history.replaceState(null, '', location.pathname + location.search);
+  accountAction(action, token);
+  return true;
+}
 function accountAction(action, token) {
   const setup = action === 'setup', verify = action === 'verify';
   root.innerHTML = welcome(`<h2>${setup ? 'Your cinema starts here.' : verify ? 'Verify your email.' : 'Choose a new password.'}</h2><p>${setup ? 'Create your owner account to open Reel Together.' : verify ? 'Confirm your email address to continue.' : 'Use at least 12 characters to protect your diary.'}</p><form id="account-action">${setup ? '<label for="setup-name">Your name</label><input id="setup-name" name="name" required maxlength="100" autocomplete="name">' : ''}${verify ? '' : '<label for="new-password">New password</label><input id="new-password" name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password">'}<button class="button primary">${setup ? 'Open my cinema' : verify ? 'Verify email' : 'Save password'}</button><p id="auth-message" class="form-error" role="status"></p></form>`);
   document.getElementById('account-action').onsubmit = async event => {
     event.preventDefault(); const form = event.target, button = form.querySelector('button'); button.disabled = true;
-    try {await completeAccountAction(action, {token, ...Object.fromEntries(new FormData(form))}); onAuthStateChanged(auth, boot);}
+    try {await completeAccountAction(action, {token, ...Object.fromEntries(new FormData(form))}); watchAuth();}
     catch (error) {status(errorText(error)); button.disabled = false;}
   };
 }

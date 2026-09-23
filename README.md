@@ -13,6 +13,8 @@ npm run dev
 
 Open http://127.0.0.1:9500. Local-only accounts are `owner@example.test`, `moviebuff@example.test` and `family@example.test`, with password `movie-night-2026`. Data persists in ignored `.local/diary.sqlite`. Restart after source edits. These accounts and their database are never deployed.
 
+This is the app's local development server, with the same API/authentication code and a SQLite database adapter. Spacefast's `sf dev` currently rejects Functions projects with `runtime_dev_unsupported`; it does not provide a Firebase-style emulator for this runtime. Hosted database and network behavior still need a check after deployment. See [Spacefast local development](https://spacefast.com/docs/cli/publish#sf-dev).
+
 ```sh
 npm test
 npm run build
@@ -23,15 +25,15 @@ Tests cover session cookies, owner setup, verification and reset links, CSRF pro
 
 ## Publish to the existing Space
 
-Team: **Igor's Team** (`igor-team`). Existing Space: `spc_872d97161d58479abd7db5fb5dd719f6`, currently named **Composed Gravatar**. The Space is already connected to `Khrol/spacefast_movies`, with automatic deployment of `main`; a push can publish production. Preserve that connection and reuse this Space.
+Team: **Igor's Team** (`igor-team`). Existing Space: **Reel Together**, `spc_872d97161d58479abd7db5fb5dd719f6`, at https://composed-gravatar.view.fast/. The Space remains connected to `Khrol/spacefast_movies`. Automatic production and preview deployments are paused: the repository sync is stuck, and the current CLI config analyzer drops Functions outbound-fetch declarations. Use `npm run deploy` to publish to this existing Space.
 
 1. Sign in using `npx sf login --api-url https://api.spacefast.com` or redeem a dashboard handoff through the hidden `--handoff` prompt. Do not put credentials in command arguments or Git.
 2. Link the existing Space using `npx sf link --space spc_872d97161d58479abd7db5fb5dd719f6 --api-url https://api.spacefast.com`. Alternatively the local non-secret `.spacefast/space.json` is `{ "space": "spc_872d97161d58479abd7db5fb5dd719f6" }`.
 3. Configure the server variables below in the Spacefast dashboard or with `sf env set NAME --value-from-stdin --space <space-id> --api-url https://api.spacefast.com`. Secret values should remain write-only. Variables take effect when a version finalizes.
-4. Run `npm run deploy`. This builds an explicit `dist/` allowlist and publishes it with the Functions runtime. The file router sends only `/api/*` to the worker; all other assets are static. Server source, environment files, local data and dependencies are not served.
+4. Run `npm run deploy`. This builds an explicit `dist/` allowlist and packages it with `sf build`. The package script carries the database and fetch declarations from `sf.jsonc` into the supported Functions artifact metadata before publishing the archive. The file router sends only `/api/*` to the worker; all other assets are static. Server source, environment files, local data and dependencies are not served.
 5. Follow the publish receipt's private access URL. Verify the version is ready and is the Space's live version, then check `/api/health`, the sign-in page, and owner setup. A private bare URL can return 403 without the receipt's browser access cookie.
 
-For the connected GitHub build use `npm ci`, `npm run build`, output directory `dist`. The `sf.jsonc` in the build output declares `database: true` and `fetch: true`.
+The CLI 0.4.1 packaging workaround is in `scripts/package.mjs`. The compiled archive omits the runtime block so a prebuilt publish does not attempt to compile already-packaged Functions a second time. It keeps the exact bundle digest and route table produced by `sf build`. Do not publish `dist/` directly or re-enable Git deployments until the platform handles both capabilities correctly; verify the resulting version reports `db: true` and `fetch: true` first.
 
 ## Owner setup and server variables
 

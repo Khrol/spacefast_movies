@@ -1,7 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseMovieId, viewing, activeLink, validGrant, canSee, watchKey} from '../server/domain.js';
-import {safePoster} from '../server/catalog.js';
+import {Catalog, safePoster} from '../server/catalog.js';
+
+test('catalog requests support the hosted fetch API and never follow credential-bearing redirects', async () => {
+  let redirect = false;
+  const requests = [];
+  const catalog = new Catalog(null, {kinopoiskToken: 'test-kp', tmdbToken: 'test-tmdb'}, async (url, options) => {
+    // Spacefast supports manual/follow, but rejects redirect: error.
+    if (options.redirect === 'error') throw new TypeError('Unsupported redirect mode');
+    requests.push({url, options});
+    return redirect ? new Response('', {status: 302, headers: {Location: 'https://untrusted.example/collect'}}) : Response.json({ok: true});
+  });
+  for (const provider of ['kinopoisk', 'tmdb']) {
+    assert.deepEqual(await catalog.request(provider, '/test'), {ok: true});
+  }
+  assert.equal(requests[0].options.headers['X-API-KEY'], 'test-kp');
+  assert.equal(requests[1].options.headers.Authorization, 'Bearer test-tmdb');
+  redirect = true;
+  for (const provider of ['kinopoisk', 'tmdb']) await assert.rejects(catalog.request(provider, '/test'), error => error.status === 502);
+  assert.equal(requests.length, 4);
+  assert.ok(requests.every(r => r.options.redirect === 'manual' && ['kinopoiskapiunofficial.tech', 'api.themoviedb.org'].includes(r.url.hostname)));
+});
 
 test('movie IDs preserve IMDb zeros and reject untrusted URLs', () => {
   assert.equal(parseMovieId('https://www.imdb.com/title/tt0126029/?ref_=x', 'imdb'), 'tt0126029');

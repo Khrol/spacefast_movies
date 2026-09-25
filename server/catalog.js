@@ -17,7 +17,7 @@ export class Catalog {
     const url = new URL(path, provider === 'kinopoisk' ? 'https://kinopoiskapiunofficial.tech' : 'https://api.themoviedb.org');
     url.search = new URLSearchParams(params).toString();
     let response;
-    try { response = await this.fetcher(url, {headers: {Accept: 'application/json', ...(provider === 'kinopoisk' ? {'X-API-KEY': token} : {Authorization: `Bearer ${token}`})}, signal: AbortSignal.timeout(10000), redirect: 'error'}); }
+    try { response = await this.fetcher(url, {headers: {Accept: 'application/json', ...(provider === 'kinopoisk' ? {'X-API-KEY': token} : {Authorization: `Bearer ${token}`})}, signal: AbortSignal.timeout(10000), redirect: 'manual'}); }
     catch { fail('The movie catalog could not connect. Try again or enter a title manually.', 502); }
     if (response.status === 404) fail('No film with that exact ID was found.', 404);
     if ([402, 429].includes(response.status)) fail('The catalog request limit was reached. Manual entry still works.', 429);

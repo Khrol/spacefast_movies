@@ -3,11 +3,7 @@
   "name": "Reel Together",
   "access": {
     "public": [
-      "/**",
-      "!/__zero/auth/api/sign-in/password",
-      "!/__zero/auth/api/sign-in/email",
-      "!/__zero/auth/api/sign-in/verify",
-      "!/__zero/auth/api/sign-in/passkey/**"
+      "/**"
     ]
   },
   "runtime": {

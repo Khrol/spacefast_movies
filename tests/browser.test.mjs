@@ -3,31 +3,35 @@ import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {chromium, expect} from '@playwright/test';
 import {createApp, localDatabase, serve} from '../scripts/local-server.mjs';
-import {identityFixture} from './identity-fixture.mjs';
-import {spacefastUserId} from '../server/auth.js';
+import {googleFixture} from './google-fixture.mjs';
+import {hash} from '../server/domain.js';
+import {localGoogle} from '../scripts/local-google.mjs';
 const {db, binding} = await localDatabase();
-const identity = identityFixture();
+const google = await googleFixture();
 let server;
 let browser;
 before(async () => {
   await db.doc('settings/app').set({billingEnabled: false, publicRegistration: false});
-  for (const name of ['author', 'wife', 'admin']) {
-    const email = `ui-${name}@example.test`, uid = identity.account(`ui-${name}`, email, {name});
-    await db.doc(`users/${uid}`).set({name, email, approved: true, complimentary: false, household_id: '', membership_epoch: uid, created_at: Date.now()});
-  }
-  server = await serve(createApp({db, secrets: {local: true, identityOrigin: 'https://identity.example.test', ownerEmail: 'ui-admin@example.test'}, identityFetch: identity.transport}));
+  server = await serve(createApp({db, secrets: {local: true, googleClientId: google.clientId, ownerEmail: 'ui-admin@example.test'}, googleKeys: google.keys}));
   browser = await chromium.launch({headless: true, ...(process.env.REEL_BROWSER_CHANNEL ? {channel: process.env.REEL_BROWSER_CHANNEL} : process.platform === 'darwin' ? {channel: 'chrome'} : {})});
   await mkdir('test-results', {recursive: true});
 });
 after(async () => { await browser?.close(); await server?.close(); binding.close(); });
 async function googleBrowser(page, who) {
-  const subject = `ui-${who}`;
-  if (!identity.accounts.has(subject)) identity.account(subject, `${subject}@example.test`, {name: who});
-  await page.context().route('**/identity/provider/start?provider=google', async route => {
-    const cookie = identity.login(subject), value = cookie.split('=')[1];
-    await page.context().addCookies([{name: 'identity_session', value, url: server.base, httpOnly: true, sameSite: 'Lax'}]);
-    await route.fulfill({contentType: 'text/html', body: '<h1>Spacefast sign-in completed</h1>'});
-  });
+  await page.exposeFunction('testGoogleCredential', nonce => google.token(nonce, {sub: `ui-${who}`, email: `ui-${who}@example.test`, name: who, hd: 'example.test'}));
+  // Stub only Google's external SDK. The app still submits a signed JWT to its
+  // real challenge/login endpoints and receives a real HttpOnly session cookie.
+  await page.route('https://accounts.google.com/gsi/client', route => route.fulfill({contentType: 'text/javascript', body: `
+    window.google = {accounts: {id: {
+      initialize(options) {this.options = options;},
+      renderButton(container) {
+        const button = document.createElement('button'); button.textContent = 'Continue with Google';
+        button.onclick = async () => this.options.callback({credential: await window.testGoogleCredential(this.options.nonce)});
+        container.append(button);
+      },
+      disableAutoSelect() {}
+    }}};
+  `}));
 }
 async function login(page, who) {
   await googleBrowser(page, who);
@@ -81,7 +85,7 @@ test('diary, household, consent sharing, account revocation, and mobile layout w
   await wife.getByRole('button', {name: 'Join household ↗', exact: true}).click();
   await expect(wife.getByRole('heading', {name: 'The Friday Film Club'})).toBeVisible();
   await page.getByRole('button', {name: 'Watching companions', exact: false}).click();
-  await page.getByLabel('Family account (optional)').selectOption(spacefastUserId('ui-wife'));
+  await page.getByLabel('Family account (optional)').selectOption((await db.doc(`googleAccounts/${hash('ui-wife')}`).get()).data().uid);
   await page.getByLabel('Share all earlier viewings', {exact: false}).check();
   await page.getByRole('button', {name: 'Save companion', exact: true}).click();
   await expect(page.locator('#toast')).toContainText('earlier viewing');
@@ -117,4 +121,32 @@ test('administration lists accounts without approval or payment controls', {time
   await expect(page.locator('#screen')).not.toContainText('Stripe');
   await expect(page.locator('#screen')).not.toContainText('membership');
   await context.close();
+});
+test('blocked Google SDK shows a retry and local demo exercises the app sessions', {timeout: 60000}, async () => {
+  const context = await browser.newContext(), page = await context.newPage();
+  await page.route('https://accounts.google.com/gsi/client', route => route.abort());
+  await page.goto(server.base);
+  await expect(page.getByRole('status')).toContainText('Google sign-in could not load');
+  await expect(page.getByRole('button', {name: 'Try Google sign-in again'})).toBeVisible();
+  await page.unroute('https://accounts.google.com/gsi/client');
+  await googleBrowser(page, 'retry-reader');
+  await page.getByRole('button', {name: 'Try Google sign-in again'}).click();
+  await page.getByRole('button', {name: 'Continue with Google', exact: true}).click();
+  await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
+  await context.close();
+
+  const local = await localDatabase(), demo = await localGoogle();
+  const demoServer = await serve(createApp({db: local.db, secrets: {local: true, localGoogle: true, googleClientId: demo.clientId, ownerEmail: 'developer@gmail.com', origin: 'http://localhost:9500'}, googleKeys: demo.keys}), {port: 9500, handleLocal: demo.handle});
+  const demoContext = await browser.newContext(), demoPage = await demoContext.newPage();
+  try {
+    await demoPage.goto('http://localhost:9500');
+    await expect(demoPage.getByRole('status')).toContainText('Local demo');
+    await demoPage.getByRole('button', {name: 'Local developer'}).click();
+    await expect(demoPage.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
+    await expect(demoPage.getByRole('button', {name: 'Administration', exact: true})).toBeVisible();
+    await demoPage.getByRole('button', {name: 'Sign out', exact: true}).click();
+    await demoPage.getByRole('button', {name: 'Local guest'}).click();
+    await expect(demoPage.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
+    await expect(demoPage.getByRole('button', {name: 'Administration', exact: true})).toHaveCount(0);
+  } finally {await demoContext.close(); await demoServer.close(); local.binding.close();}
 });

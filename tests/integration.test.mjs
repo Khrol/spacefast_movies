@@ -2,20 +2,26 @@ import test, {before, after} from 'node:test';
 import assert from 'node:assert/strict';
 import {createApp, localDatabase, serve} from '../scripts/local-server.mjs';
 import {Catalog} from '../server/catalog.js';
-import {identityFixture} from './identity-fixture.mjs';
-const identity = identityFixture(), uids = {};
+import {googleFixture} from './google-fixture.mjs';
+const google = await googleFixture(), uids = {};
 
 const {db, binding} = await localDatabase();
-const secrets = {origin: 'https://films.example.test', local: true, ownerEmail: 'owner@example.test', kinopoiskToken: 'fixture'};
+const secrets = {origin: 'https://films.example.test', local: true, ownerEmail: 'owner@example.test', kinopoiskToken: 'fixture', googleClientId: google.clientId};
 const catalog = new Catalog(db, secrets, async url => new Response(JSON.stringify(url.pathname === '/api/v2.2/films/430' ? {kinopoiskId: 430, nameRu: 'Шрек', year: 2001, imdbId: 'tt0126029', ratingKinopoisk: 8, ratingImdb: 7.9, posterUrl: 'https://kinopoiskapiunofficial.tech/images/posters/kp/430.jpg'} : {items: [{kinopoiskId: 430, nameRu: 'Шрек', year: 2001, imdbId: 'tt0126029', ratingKinopoisk: 8}]}), {status: 200, headers: {'Content-Type': 'application/json'}}));
 let server, base;
 const tokens = {};
-async function user(key, {admin = false, verified = true, approved = true} = {}) {
+async function user(key, {verified = true, approved = true} = {}) {
   const address = `${key}@example.test`;
-  const uid = identity.account(`test-${key}`, address, {name: key, ...(verified ? {} : {providers: []})});
+  if (!verified) {tokens[key] = 'identity_session=unverified'; return;}
+  const challenge = await call(null, 'auth/google/challenge', 'POST', {});
+  const cookie = challenge.headers.getSetCookie()[0].split(';')[0];
+  const login = await call(null, 'auth/google', 'POST', {credential: await google.token(challenge.data.nonce, {sub: `test-${key}`, email: address, name: key, hd: 'example.test'})}, {Cookie: cookie});
+  assert.equal(login.status, 200, JSON.stringify(login.data));
+  const uid = login.data.user.uid;
+  tokens[key] = login.headers.getSetCookie().find(c => c.startsWith('reel_google_session=')).split(';')[0];
   uids[key] = uid;
   await db.doc(`users/${uid}`).set({name: key, email: address, approved, complimentary: false, household_id: '', membership_epoch: uid, created_at: Date.now()});
-  tokens[key] = identity.login(`test-${key}`); return uid;
+  return uid;
 }
 async function call(who, route, method = 'GET', body, headers = {}) {
   const response = await fetch(`${base}/api/${route}`, {method, headers: {'Content-Type': 'application/json', Origin: secrets.origin, ...(who ? {Cookie: tokens[who] || who} : {}), ...headers}, body: body === undefined ? undefined : JSON.stringify(body)});
@@ -25,7 +31,7 @@ async function ok(who, route, method = 'GET', body, expected = 200) { const resu
 const viewing = (title = 'A private film', more = {}) => ({movie: {title, year: 2001}, status: 'watched', scope: 'personal', watched_on: '2024-01-01', notes: 'Private notes', ...more});
 before(async () => {
   await db.doc('settings/app').set({billingEnabled: true, publicRegistration: false});
-  server = await serve(createApp({db, secrets, catalog, identityFetch: identity.transport})); base = server.base;
+  server = await serve(createApp({db, secrets, catalog, googleKeys: google.keys})); base = server.base;
   await user('owner', {admin: true}); await user('author'); await user('wife'); await user('third'); await user('outsider'); await user('unverified', {verified: false}); await user('pending', {approved: false});
 });
 after(async () => { await server.close(); binding.close(); });

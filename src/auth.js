@@ -1,5 +1,6 @@
 import {auth, api} from './api.js';
 const listeners = new Set();
+let googleScript;
 function setUser(user, notify = true) {
   auth.currentUser = user;
   if (notify) for (const callback of listeners) void callback(user);
@@ -7,36 +8,58 @@ function setUser(user, notify = true) {
 }
 export async function initializeAuth() {setUser((await api('auth/session')).user, false);}
 export function onAuthStateChanged(_auth, callback) {listeners.add(callback); void callback(auth.currentUser); return () => listeners.delete(callback);}
-export function renderGoogleSignIn(container, onError) {
-  const button = document.createElement('button');
-  button.type = 'button'; button.className = 'button primary'; button.textContent = 'Continue with Google';
-  const cancel = document.createElement('button');
-  cancel.type = 'button'; cancel.className = 'text-button'; cancel.textContent = 'Cancel sign-in'; cancel.hidden = true;
-  container.replaceChildren(button, cancel);
-  button.onclick = () => {
-    const popup = window.open('/identity/provider/start?provider=google', 'reel-google-signin', 'popup,width=520,height=720');
-    if (!popup) {onError(new Error('Allow the sign-in popup, then try again.')); return;}
-    button.disabled = true;
-    cancel.hidden = false;
-    const started = Date.now();
-    let inFlight = false;
-    const timer = setInterval(async () => {
-      if (inFlight) return;
-      if (!container.isConnected || Date.now() - started > 5 * 60000) {
-        clearInterval(timer); button.disabled = false; cancel.hidden = true;
-        if (container.isConnected) onError(new Error('Sign-in timed out. Please try again.'));
-        return;
-      }
-      inFlight = true;
-      try {
-        const {user} = await api('auth/session');
-        if (user) {clearInterval(timer); try {popup.close();} catch {} setUser(user);}
-        // Cross-Origin-Opener-Policy can make popup.closed report true during
-        // Google sign-in. Only a verified app session completes this flow.
-      } catch (error) {clearInterval(timer); button.disabled = false; cancel.hidden = true; onError(error);}
-      finally {inFlight = false;}
-    }, 1200);
-    cancel.onclick = () => {clearInterval(timer); button.disabled = false; cancel.hidden = true; try {popup.close();} catch {}};
-  };
+function loadGoogle() {
+  if (window.google?.accounts?.id) return Promise.resolve();
+  if (!googleScript) googleScript = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    const fail = () => {clearTimeout(timer); script.remove(); googleScript = null; reject(new Error('Google sign-in could not load. Check your connection and try again.'));};
+    const timer = setTimeout(fail, 15000);
+    script.src = 'https://accounts.google.com/gsi/client'; script.async = true;
+    script.onload = () => {clearTimeout(timer); window.google?.accounts?.id ? resolve() : fail();};
+    script.onerror = fail;
+    document.head.append(script);
+  });
+  return googleScript;
 }
-export async function signOut() {await api('auth/logout', 'POST', {}); setUser(null);}
+export async function renderGoogleSignIn(container, onError, {demo = false} = {}) {
+  const complete = async credential => {
+    if (!container.isConnected || container.getAttribute('aria-busy') === 'true') return;
+    container.setAttribute('aria-busy', 'true');
+    try {setUser((await api('auth/google', 'POST', {credential})).user);}
+    catch (error) {if (container.isConnected) onError(error);}
+    finally {container.setAttribute('aria-busy', 'false');}
+  };
+  if (demo) {
+    for (const person of ['developer', 'guest']) {
+      const button = document.createElement('button');
+      button.className = 'button primary'; button.textContent = `Local ${person}`;
+      button.onclick = async () => {
+        button.disabled = true;
+        try {
+          const challenge = await api('auth/google/challenge', 'POST', {});
+          const {credential} = await api('dev/google', 'POST', {person, nonce: challenge.nonce});
+          await complete(credential);
+        } catch (error) {onError(error);} finally {button.disabled = false;}
+      };
+      container.append(button);
+    }
+    return;
+  }
+  container.textContent = 'Loading Google sign-in…';
+  // Load the SDK first so a slow/blocked script cannot race a retry's nonce.
+  await loadGoogle();
+  if (!container.isConnected) return;
+  const challenge = await api('auth/google/challenge', 'POST', {});
+  if (!container.isConnected) return;
+  container.replaceChildren();
+  google.accounts.id.initialize({
+    client_id: challenge.client_id, nonce: challenge.nonce, auto_select: false, ux_mode: 'popup',
+    callback: ({credential}) => complete(credential),
+  });
+  google.accounts.id.renderButton(container, {type: 'standard', theme: 'outline', size: 'large', text: 'continue_with', shape: 'rectangular', width: Math.min(360, container.clientWidth)});
+}
+export async function signOut() {
+  await api('auth/logout', 'POST', {});
+  window.google?.accounts?.id?.disableAutoSelect();
+  setUser(null);
+}

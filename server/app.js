@@ -4,8 +4,8 @@ import {AppError, fail, hash, id} from './domain.js';
 import {Catalog} from './catalog.js';
 import {DiaryStore, row} from './store.js';
 
-export function createApp({db, secrets = {}, catalog = new Catalog(db, secrets), identityFetch}) {
-  const app = new Hono(), router = new Hono(), store = new DiaryStore(db, catalog), auth = new Auth(db, secrets, identityFetch);
+export function createApp({db, secrets = {}, catalog = new Catalog(db, secrets), googleKeys}) {
+  const app = new Hono(), router = new Hono(), store = new DiaryStore(db, catalog), auth = new Auth(db, secrets, googleKeys);
   router.use('*', async (c, next) => {
     c.header('Cache-Control', 'private, no-store, max-age=0');
     c.header('X-Content-Type-Options', 'nosniff');
@@ -37,7 +37,7 @@ export function createApp({db, secrets = {}, catalog = new Catalog(db, secrets),
     });
   };
   routes.get('/health', (_req, res) => res.json({ok: true}));
-  routes.get('/config', async (_req, res) => res.json({...await auth.config(), ...(secrets.localIdentity ? {local_identity: true} : {})}));
+  routes.get('/config', (_req, res) => res.json({...auth.config(), ...(secrets.localGoogle ? {local_google: true} : {})}));
   router.all('/billing/*', c => c.json({message: 'Not found.'}, 404));
   router.all('/membership', c => c.json({message: 'Not found.'}, 404));
   router.all('/invitations', c => c.json({message: 'Not found.'}, 404));

@@ -27,20 +27,24 @@ await run(['scripts/build.mjs']);
 const archive = await packageApp();
 const settingsPath = `/v1/spaces/${spaceId}/users/settings`;
 const before = (await sf(['api', 'GET', settingsPath])).data;
+// Authentication belongs to this app. Keep native Users disabled while retaining
+// its saved provider settings, so a rollback can be configured without new secrets.
+const desiredSettings = {...before.settings, enabled: false};
 const receipt = await sf(['publish', archive, '--prebuilt', '--space', spaceId, '--wait', ...process.argv.slice(2).filter(arg => arg !== '--json')]);
 const after = (await sf(['api', 'GET', settingsPath])).data;
-if (JSON.stringify(before.settings) !== JSON.stringify(after.settings)) {
+if (JSON.stringify(desiredSettings) !== JSON.stringify(after.settings)) {
   // CLI 0.4.1 predates Users and drops this newer configuration on publish.
   // Restore only its known default reset, while our version is still live.
   // The settings digest also rejects a concurrent dashboard edit during restore.
   const detail = (await sf(['versions', 'get', receipt.data.versionId, '--space', spaceId])).data;
   const reset = !after.settings.enabled && after.settings.providers.google.mode === 'managed' && after.settings.providers.gravatar.enabled && after.settings.providers.spacefast.enabled;
-  if (!reset || detail.space.channels.live.versionId !== receipt.data.versionId) throw new Error('Users settings changed concurrently. Review the dashboard before publishing again.');
-  await sf(['api', 'PATCH', settingsPath, '--input', '-'], {settings: before.settings, baseSettingsDigest: after.settingsDigest});
+  const unchanged = JSON.stringify(before.settings) === JSON.stringify(after.settings);
+  if ((!reset && !unchanged) || detail.space.channels.live.versionId !== receipt.data.versionId) throw new Error('Users settings changed concurrently. Review the dashboard before publishing again.');
+  await sf(['api', 'PATCH', settingsPath, '--input', '-'], {settings: desiredSettings, baseSettingsDigest: after.settingsDigest});
   // Restoring settings creates a config version with this same worker bundle.
   const final = (await sf(['runtime', 'status', '--space', spaceId])).data;
   receipt.data.publishedVersionId = receipt.data.versionId;
   receipt.data.liveVersionId = final.liveVersionId;
-  receipt.data.usersSettingsPreserved = true;
+  receipt.data.nativeUsersDisabled = true;
 }
 console.log(JSON.stringify(receipt, null, 2));

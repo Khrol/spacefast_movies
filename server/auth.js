@@ -1,81 +1,117 @@
-import {email, hash, fail} from './domain.js';
+import {createRemoteJWKSet, jwtVerify} from 'jose';
+import {email, hash, newId, fail} from './domain.js';
 
-const IDENTITY_API = '/__zero/auth/api/';
-const googleIssuers = new Set(['https://accounts.google.com', 'accounts.google.com']);
-export const spacefastUserId = subject => `sf_${hash(subject).slice(0, 32)}`;
+const SESSION_AGE = 7 * 86400000, CHALLENGE_AGE = 10 * 60000;
+const AUTH_VERSION = 2;
+const googleKeys = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'), {timeoutDuration: 8000});
 const publicUser = account => ({uid: account.id, email: account.email, displayName: account.name});
+const randomToken = () => newId() + newId();
 
-// Validate the Space's Identity session on every request. No second app session
-// or session cache can outlive suspension or revocation in Spacefast Users.
+export async function verifyGoogleToken(credential, clientId, nonce, keys = googleKeys) {
+  if (typeof credential !== 'string' || credential.length > 16000) fail('Google sign-in could not be verified. Please try again.', 401);
+  let payload;
+  try {
+    ({payload} = await jwtVerify(credential, keys, {
+      algorithms: ['RS256'], issuer: ['https://accounts.google.com', 'accounts.google.com'], audience: clientId,
+      requiredClaims: ['sub', 'email', 'email_verified', 'nonce', 'iat', 'exp'], maxTokenAge: '10m', clockTolerance: 5,
+    }));
+  } catch { fail('Google sign-in could not be verified. Please try again.', 401); }
+  if (payload.nonce !== nonce || payload.aud !== clientId || (payload.azp && payload.azp !== clientId) ||
+      payload.email_verified !== true || typeof payload.sub !== 'string' || !payload.sub || payload.sub.length > 255) {
+    fail('Google sign-in could not be verified. Please try again.', 401);
+  }
+  let address;
+  try {address = email(payload.email);} catch {fail('Google sign-in could not be verified. Please try again.', 401);}
+  return {
+    subject: payload.sub, email: address, name: String(payload.name || address.split('@')[0]).trim().slice(0, 100),
+    // Google is authoritative for Gmail and verified Workspace addresses.
+    // Other Google accounts can join, but cannot claim the initial owner role.
+    authoritativeEmail: address.endsWith('@gmail.com') || (typeof payload.hd === 'string' && !!payload.hd),
+  };
+}
+
 export class Auth {
-  constructor(db, secrets, identityFetch = fetch) {this.db = db; this.secrets = secrets; this.fetch = (...args) => identityFetch(...args);}
-  async identity(path, c, {body, csrf} = {}) {
-    const origin = this.secrets.identityOrigin || this.secrets.origin;
-    if (!origin) fail('Spacefast sign-in is not configured for this environment.', 503);
-    const url = new URL(IDENTITY_API + path, origin);
-    const headers = {'Accept': 'application/json', 'Content-Type': 'application/json'};
-    // Forward cookies only to the fixed, server-configured origin.
-    if (c && c.req.header('Cookie')) headers.Cookie = c.req.header('Cookie');
-    if (csrf) headers['X-Identity-CSRF'] = csrf;
-    if (body !== undefined) headers.Origin = url.origin;
-    let response;
-    try {
-      response = await this.fetch(url.href, {method: body === undefined ? 'GET' : 'POST', headers, redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(10000), ...(body === undefined ? {} : {body: JSON.stringify(body)})});
-    } catch (error) {
-      console.error('Spacefast Identity request failed:', error.name, error.code || 'no_code');
-      fail('Spacefast sign-in is temporarily unavailable. Please try again.', 503);
-    }
-    if ([401, 403].includes(response.status)) return null;
-    if (!response.ok) {console.error('Spacefast Identity returned HTTP', response.status); fail('Spacefast sign-in is temporarily unavailable. Please try again.', 503);}
-    let data; try {data = (await response.json()).data;} catch {fail('Spacefast sign-in returned an invalid response.', 503);}
-    if (!data || typeof data !== 'object') fail('Spacefast sign-in returned an invalid response.', 503);
-    return data;
+  constructor(db, secrets, keys) { this.db = db; this.secrets = secrets; this.keys = keys; }
+  config() { return {auth_provider: 'google', google_configured: !!this.secrets.googleClientId}; }
+  async limit(key, count = 30, seconds = 600) {
+    const bucket = Math.floor(Date.now() / (seconds * 1000));
+    await this.db.runTransaction(async tx => {
+      const ref = this.db.doc(`rateLimits/${hash(`${key}:${bucket}`)}`), data = (await tx.get(ref)).data() || {};
+      if ((data.count || 0) >= count) fail('Too many attempts. Please try again later.', 429);
+      tx.set(ref, {count: (data.count || 0) + 1, expiresAt: (bucket + 2) * seconds * 1000});
+    });
   }
-  async config() {
-    const data = await this.identity('config');
-    if (!Array.isArray(data?.providers)) fail('Spacefast sign-in is not configured.', 503);
-    return {auth_provider: 'spacefast', google_configured: data.providers.includes('google')};
+  cookieName(kind) { return `${this.secrets.local === true ? '' : '__Host-'}reel_google_${kind}`; }
+  cookie(c, kind, token, age) {
+    c.header('Set-Cookie', `${this.cookieName(kind)}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${this.secrets.local === true ? '' : '; Secure'}`, {append: true});
   }
-  async session(c) {
-    if (!c.req.header('Cookie')) return null;
-    const data = await this.identity('account', c);
-    if (!data) return null;
-    const {account, session} = data;
-    if (!account || typeof account.id !== 'string' || !account.id || account.id.length > 512 ||
-        !session || typeof session.id !== 'string' || !Number.isFinite(session.expires_at) || session.expires_at <= Date.now() / 1000 ||
-        account.status !== 'active') return null;
-    return data;
+  token(c, kind) {
+    const name = this.cookieName(kind);
+    const value = c.req.header('Cookie')?.split(';').map(v => v.trim()).find(v => v.startsWith(`${name}=`))?.slice(name.length + 1) || '';
+    return /^[a-f0-9]{64}$/.test(value) ? value : '';
   }
   async account(c) {
-    const data = await this.session(c);
-    if (!data) return null;
-    const identity = data.account;
-    if (!Array.isArray(identity.providers) || !identity.providers.some(p => googleIssuers.has(p.issuer))) return null;
-    const addresses = Array.isArray(identity.emails) ? identity.emails.filter(e => typeof e.email === 'string' && Number.isFinite(e.verified_at) && e.verified_at > 0) : [];
-    const primary = addresses.find(e => e.primary) || addresses[0];
-    if (!primary) return null;
-    let address; try {address = email(primary.email);} catch {return null;}
-    const uid = spacefastUserId(identity.id), ownerEmail = this.secrets.ownerEmail?.toLowerCase();
-    const admin = await this.db.runTransaction(async tx => {
-      const ref = this.db.doc('settings/spacefastOwner'), owner = (await tx.get(ref)).data();
-      if (owner) return owner.subject === identity.id;
-      if (ownerEmail && addresses.some(e => e.email.toLowerCase() === ownerEmail)) {
-        tx.create(ref, {uid, subject: identity.id}); return true;
-      }
-      return false;
-    });
-    return {id: uid, email: address, name: String(identity.name || address.split('@')[0]).trim().slice(0, 100), admin};
+    const token = this.token(c, 'session');
+    if (!token) return null;
+    const session = (await this.db.doc(`authSessions/${hash(token)}`).get()).data();
+    if (!session || session.authVersion !== AUTH_VERSION || session.provider !== 'google' || !Number.isFinite(session.expiresAt) || session.expiresAt <= Date.now()) return null;
+    const account = (await this.db.doc(`accounts/${session.uid}`).get()).data();
+    if (!account?.googleSubject || account.googleSubject !== session.subject || !account.sessionVersion || account.sessionVersion !== session.version) return null;
+    return account;
   }
-  async require(c) {const account = await this.account(c); if (!account) fail('Sign in with Google to use your diary.', 401); return account;}
+  async require(c) { const account = await this.account(c); if (!account) fail('Sign in with Google to use your diary.', 401); return account; }
   routes(app) {
-    app.get('/auth/session', async c => {const account = await this.account(c); return c.json({user: account ? publicUser(account) : null});});
+    app.get('/auth/session', async c => { const account = await this.account(c); return c.json({user: account ? publicUser(account) : null}); });
+    app.post('/auth/google/challenge', async c => {
+      if (!this.secrets.googleClientId) fail('Google sign-in is not configured yet. Please try again later.', 503);
+      await this.limit(`google-start:${c.get('ip')}`);
+      const token = randomToken(), nonce = randomToken();
+      await this.db.doc(`authChallenges/${hash(token)}`).set({nonce, authVersion: AUTH_VERSION, expiresAt: Date.now() + CHALLENGE_AGE});
+      this.cookie(c, 'challenge', token, CHALLENGE_AGE / 1000);
+      return c.json({client_id: this.secrets.googleClientId, nonce});
+    });
+    app.post('/auth/google', async c => {
+      if (!this.secrets.googleClientId) fail('Google sign-in is not configured yet. Please try again later.', 503);
+      await this.limit(`google-login:${c.get('ip')}`);
+      const challengeToken = this.token(c, 'challenge');
+      if (!challengeToken) fail('Your sign-in expired. Please try again.', 401);
+      const challengeRef = this.db.doc(`authChallenges/${hash(challengeToken)}`);
+      const challenge = (await challengeRef.get()).data();
+      if (!challenge || challenge.authVersion !== AUTH_VERSION || !Number.isFinite(challenge.expiresAt) || challenge.expiresAt <= Date.now()) fail('Your sign-in expired. Please try again.', 401);
+      const identity = await verifyGoogleToken(c.get('body').credential, this.secrets.googleClientId, challenge.nonce, this.keys);
+      const sessionToken = randomToken();
+      const account = await this.db.runTransaction(async tx => {
+        const currentChallenge = (await tx.get(challengeRef)).data();
+        if (!currentChallenge || currentChallenge.expiresAt <= Date.now() || currentChallenge.nonce !== challenge.nonce) fail('Your sign-in expired. Please try again.', 401);
+        const identityRef = this.db.doc(`googleAccounts/${hash(identity.subject)}`);
+        const linked = (await tx.get(identityRef)).data();
+        const existing = linked ? (await tx.get(this.db.doc(`accounts/${linked.uid}`))).data() : null;
+        if (linked && (!existing || existing.googleSubject !== identity.subject)) fail('This account is unavailable. Please contact the site owner.', 409);
+        // Only an existing, verified Google subject mapping can reuse a diary.
+        // Never link Spacefast or legacy accounts by matching their email.
+        const ownerRef = this.db.doc('settings/googleOwner'), owner = (await tx.get(ownerRef)).data();
+        const isOwner = owner ? owner.subject === identity.subject : identity.authoritativeEmail && identity.email === this.secrets.ownerEmail?.toLowerCase();
+        const account = {
+          id: existing?.id || newId(), googleSubject: identity.subject, email: identity.email, name: identity.name,
+          admin: isOwner,
+          sessionVersion: existing?.sessionVersion || newId(),
+        };
+        tx.set(this.db.doc(`accounts/${account.id}`), account);
+        if (isOwner && !owner) tx.create(ownerRef, {uid: account.id, subject: identity.subject});
+        tx.set(identityRef, {uid: account.id});
+        tx.delete(challengeRef);
+        const oldSession = this.token(c, 'session');
+        if (oldSession) tx.delete(this.db.doc(`authSessions/${hash(oldSession)}`));
+        tx.create(this.db.doc(`authSessions/${hash(sessionToken)}`), {uid: account.id, authVersion: AUTH_VERSION, version: account.sessionVersion, provider: 'google', subject: account.googleSubject, expiresAt: Date.now() + SESSION_AGE});
+        return account;
+      });
+      this.cookie(c, 'session', sessionToken, SESSION_AGE / 1000);
+      this.cookie(c, 'challenge', '', 0);
+      return c.json({user: publicUser(account)});
+    });
     app.post('/auth/logout', async c => {
-      const session = await this.session(c);
-      if (session) {
-        if (typeof session.csrf !== 'string' || !session.csrf) fail('Spacefast sign-out is unavailable. Please try again.', 503);
-        const result = await this.identity('sign-out', c, {body: {}, csrf: session.csrf});
-        if (!result?.signed_out) fail('Spacefast sign-out failed. Please try again.', 503);
-      }
+      const token = this.token(c, 'session'); if (token) await this.db.doc(`authSessions/${hash(token)}`).delete();
+      this.cookie(c, 'session', '', 0); this.cookie(c, 'challenge', '', 0);
       return c.json({signedOut: true});
     });
     app.all('/auth/*', c => c.json({message: 'Not found.'}, 404));

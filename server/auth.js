@@ -56,7 +56,11 @@ export class Auth {
   }
   async require(c) { const account = await this.account(c); if (!account) fail('Sign in with Google to use your diary.', 401); return account; }
   routes(app) {
-    app.get('/auth/session', async c => { const account = await this.account(c); return c.json({user: account ? publicUser(account) : null}); });
+    app.get('/auth/session', async c => {
+      const account = await this.account(c);
+      if (!account && c.req.header('X-Reel-Session')) fail('Your session expired. Sign in again.', 401);
+      return c.json({user: account ? publicUser(account) : null});
+    });
     app.post('/auth/google/challenge', async c => {
       if (!this.secrets.googleClientId) fail('Google sign-in is not configured yet. Please try again later.', 503);
       await this.limit(`google-start:${c.get('ip')}`);

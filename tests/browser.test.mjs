@@ -17,8 +17,17 @@ before(async () => {
   await mkdir('test-results', {recursive: true});
 });
 after(async () => { await browser?.close(); await server?.close(); binding.close(); });
-async function googleBrowser(page, who) {
-  await page.exposeFunction('testGoogleCredential', nonce => google.token(nonce, {sub: `ui-${who}`, email: `ui-${who}@example.test`, name: who, hd: 'example.test'}));
+async function googleBrowser(page, who, {expireFirst = false} = {}) {
+  let first = expireFirst;
+  await page.exposeFunction('testGoogleCredential', async nonce => {
+    if (first) {
+      first = false;
+      const challenges = await db.collection('authChallenges').get();
+      const challenge = challenges.docs.find(s => s.data().nonce === nonce);
+      await challenge.ref.update({expiresAt: 1});
+    }
+    return google.token(nonce, {sub: `ui-${who}`, email: `ui-${who}@example.test`, name: who, hd: 'example.test'});
+  });
   // Stub only Google's external SDK. The app still submits a signed JWT to its
   // real challenge/login endpoints and receives a real app session.
   await page.route('https://accounts.google.com/gsi/client', route => route.fulfill({contentType: 'text/javascript', body: `
@@ -129,10 +138,10 @@ test('blocked Google SDK shows a retry and local demo exercises the app sessions
   await page.route('https://accounts.google.com/gsi/client', route => route.abort());
   await page.goto(server.base);
   await expect(page.getByRole('status')).toContainText('Google sign-in could not load');
-  await expect(page.getByRole('button', {name: 'Try Google sign-in again'})).toBeVisible();
+  await expect(page.getByRole('button', {name: 'Refresh sign-in'})).toBeVisible();
   await page.unroute('https://accounts.google.com/gsi/client');
   await googleBrowser(page, 'retry-reader');
-  await page.getByRole('button', {name: 'Try Google sign-in again'}).click();
+  await page.getByRole('button', {name: 'Refresh sign-in'}).click();
   await page.getByRole('button', {name: 'Continue with Google', exact: true}).click();
   await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
   await context.close();
@@ -151,4 +160,23 @@ test('blocked Google SDK shows a retry and local demo exercises the app sessions
     await expect(demoPage.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
     await expect(demoPage.getByRole('button', {name: 'Administration', exact: true})).toHaveCount(0);
   } finally {await demoContext.close(); await demoServer.close(); local.binding.close();}
+});
+
+test('expired Google sign-in has a visible refresh button and the next attempt succeeds', {timeout: 60000}, async () => {
+  const context = await browser.newContext(), page = await context.newPage();
+  try {
+    await googleBrowser(page, 'expired-reader', {expireFirst: true});
+    await page.goto(server.base);
+    await expect(page.getByRole('button', {name: 'Refresh sign-in'})).toBeVisible();
+    await page.getByRole('button', {name: 'Continue with Google', exact: true}).click();
+    await expect(page.getByRole('status')).toContainText('Your sign-in expired');
+    await page.getByRole('button', {name: 'Refresh sign-in'}).click();
+    await page.getByRole('button', {name: 'Continue with Google', exact: true}).click();
+    await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
+    const session = await page.evaluate(() => sessionStorage.getItem('reel_google_session'));
+    await db.doc(`authSessions/${hash(session)}`).update({expiresAt: 1});
+    await page.reload();
+    await expect(page.getByRole('button', {name: 'Refresh sign-in'})).toBeVisible();
+    assert.equal(await page.evaluate(() => sessionStorage.getItem('reel_google_session')), null);
+  } finally {await context.close();}
 });

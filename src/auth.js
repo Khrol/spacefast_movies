@@ -6,7 +6,12 @@ function setUser(user, notify = true) {
   if (notify) for (const callback of listeners) void callback(user);
   return user;
 }
-export async function initializeAuth() {const {user} = await api('auth/session'); if (!user) setSession(''); setUser(user, false);}
+export async function initializeAuth() {
+  let user = null;
+  try {({user} = await api('auth/session'));} catch (error) {if (error.status !== 401) throw error;}
+  if (!user) setSession('');
+  setUser(user, false);
+}
 export function onAuthStateChanged(_auth, callback) {listeners.add(callback); void callback(auth.currentUser); return () => listeners.delete(callback);}
 function loadGoogle() {
   if (window.google?.accounts?.id) return Promise.resolve();

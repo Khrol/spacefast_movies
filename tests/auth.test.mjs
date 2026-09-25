@@ -109,6 +109,7 @@ test('app sessions expire, revoke, rotate on login and are stored only as hashes
     assert.equal((await call('entries', undefined, second.session)).status, 200);
     await sessionRef.update({expiresAt: 1});
     assert.equal((await call('entries', undefined, second.session)).status, 401);
+    assert.equal((await call('auth/session', undefined, second.session)).status, 401);
     const fresh = await signin();
     await db.doc(`accounts/${fresh.data.user.uid}`).update({sessionVersion: 'revoked'});
     assert.equal((await call('entries', undefined, fresh.session)).status, 401);

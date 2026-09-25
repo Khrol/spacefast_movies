@@ -10,7 +10,7 @@ const root = document.getElementById('app');
 let publicConfig, bootVersion = 0;
 const errorText = error => error.message || 'Please try again.';
 function login() {
-  root.innerHTML = welcome('<p class="eyebrow">WELCOME TO YOUR LITTLE CINEMA</p><h2>Come on in.</h2><p>Continue with Google to start your free movie diary. New here? Your account is created automatically.</p><div id="google-signin" class="google-signin"></div><p id="auth-message" class="form-error" role="status" aria-live="polite"></p><button class="text-button" id="retry-google" hidden>Try Google sign-in again</button><p class="helper">Your diary is private. Choose what to share with your household and watching companions.</p>');
+  root.innerHTML = welcome('<p class="eyebrow">WELCOME TO YOUR LITTLE CINEMA</p><h2>Come on in.</h2><p>Continue with Google to start your free movie diary. New here? Your account is created automatically.</p><div id="google-signin" class="google-signin"></div><p id="auth-message" class="form-error" role="status" aria-live="polite"></p><button class="text-button" id="retry-google">Refresh sign-in</button><p class="helper">Your diary is private. Choose what to share with your household and watching companions.</p>');
   const container = document.getElementById('google-signin'), message = document.getElementById('auth-message'), retry = document.getElementById('retry-google');
   if (publicConfig.local_google) message.textContent = 'Local demo: sign-in is simulated and data stays on this computer.';
   const failed = error => {
@@ -18,7 +18,7 @@ function login() {
     if (container.textContent === 'Loading Google sign-in…') container.replaceChildren();
     message.textContent = errorText(error); retry.hidden = false;
   };
-  retry.onclick = async () => {try {publicConfig = await api('config'); login();} catch (error) {failed(error);}};
+  retry.onclick = () => location.reload();
   if (!publicConfig.google_configured) {failed(new Error('Google sign-in is being set up. Please check back soon.')); return;}
   renderGoogleSignIn(container, failed, {demo: publicConfig.local_google}).catch(failed);
 }

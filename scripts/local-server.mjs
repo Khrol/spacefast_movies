@@ -26,10 +26,11 @@ export async function localDatabase(filename) {
   await db.initialize();
   return {db, binding};
 }
-export function serve(app, {port = 0, staticRoot = resolve('dist')} = {}) {
+export function serve(app, {port = 0, staticRoot = resolve('dist'), handleIdentity} = {}) {
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://127.0.0.1:${server.address().port}`);
+      if (handleIdentity?.(req, res, url)) return;
       if (!url.pathname.startsWith('/api/')) {
         res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
         res.setHeader('Referrer-Policy', 'no-referrer-when-downgrade');

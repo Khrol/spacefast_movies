@@ -5,7 +5,6 @@ export function readSecrets(env) {
   return {
     origin: env.APP_ORIGIN,
     ownerEmail: env.OWNER_EMAIL,
-    googleClientId: env.GOOGLE_CLIENT_ID,
     kinopoiskToken: env.KINOPOISK_TOKEN,
     tmdbToken: env.TMDB_TOKEN,
   };

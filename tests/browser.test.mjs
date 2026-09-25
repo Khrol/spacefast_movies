@@ -3,39 +3,31 @@ import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {chromium, expect} from '@playwright/test';
 import {createApp, localDatabase, serve} from '../scripts/local-server.mjs';
-import {googleFixture} from './google-fixture.mjs';
-import {hash} from '../server/domain.js';
+import {identityFixture} from './identity-fixture.mjs';
+import {spacefastUserId} from '../server/auth.js';
 const {db, binding} = await localDatabase();
-const google = await googleFixture();
+const identity = identityFixture();
 let server;
 let browser;
 before(async () => {
   await db.doc('settings/app').set({billingEnabled: false, publicRegistration: false});
   for (const name of ['author', 'wife', 'admin']) {
-    const uid = `ui-${name}`, email = `ui-${name}@example.test`;
-    await db.doc(`accounts/${uid}`).set({id: uid, email, name, googleSubject: `google-ui-${name}`, admin: name === 'admin', sessionVersion: 'browser'});
-    await db.doc(`googleAccounts/${hash(`google-ui-${name}`)}`).set({uid});
+    const email = `ui-${name}@example.test`, uid = identity.account(`ui-${name}`, email, {name});
     await db.doc(`users/${uid}`).set({name, email, approved: true, complimentary: false, household_id: '', membership_epoch: uid, created_at: Date.now()});
   }
-  server = await serve(createApp({db, secrets: {local: true, googleClientId: google.clientId}, googleKeys: google.keys}));
+  server = await serve(createApp({db, secrets: {local: true, identityOrigin: 'https://identity.example.test', ownerEmail: 'ui-admin@example.test'}, identityFetch: identity.transport}));
   browser = await chromium.launch({headless: true, ...(process.env.REEL_BROWSER_CHANNEL ? {channel: process.env.REEL_BROWSER_CHANNEL} : process.platform === 'darwin' ? {channel: 'chrome'} : {})});
   await mkdir('test-results', {recursive: true});
 });
 after(async () => { await browser?.close(); await server?.close(); binding.close(); });
 async function googleBrowser(page, who) {
-  await page.exposeFunction('fixtureGoogleToken', nonce => google.token(nonce, {sub: `google-ui-${who}`, email: `ui-${who}@example.test`, name: who}));
-  await page.route('https://accounts.google.com/gsi/client', route => route.fulfill({contentType: 'text/javascript', body: `
-    let config;
-    window.google = {accounts: {id: {
-      initialize(value) {config = value;},
-      renderButton(container) {
-        const button = document.createElement('button'); button.textContent = 'Continue with Google';
-        button.onclick = async () => config.callback({credential: await window.fixtureGoogleToken(config.nonce)});
-        container.append(button);
-      },
-      disableAutoSelect() {},
-    }}};
-  `}));
+  const subject = `ui-${who}`;
+  if (!identity.accounts.has(subject)) identity.account(subject, `${subject}@example.test`, {name: who});
+  await page.context().route('**/identity/provider/start?provider=google', async route => {
+    const cookie = identity.login(subject), value = cookie.split('=')[1];
+    await page.context().addCookies([{name: 'identity_session', value, url: server.base, httpOnly: true, sameSite: 'Lax'}]);
+    await route.fulfill({contentType: 'text/html', body: '<h1>Spacefast sign-in completed</h1>'});
+  });
 }
 async function login(page, who) {
   await googleBrowser(page, who);
@@ -89,7 +81,7 @@ test('diary, household, consent sharing, account revocation, and mobile layout w
   await wife.getByRole('button', {name: 'Join household ↗', exact: true}).click();
   await expect(wife.getByRole('heading', {name: 'The Friday Film Club'})).toBeVisible();
   await page.getByRole('button', {name: 'Watching companions', exact: false}).click();
-  await page.getByLabel('Family account (optional)').selectOption('ui-wife');
+  await page.getByLabel('Family account (optional)').selectOption(spacefastUserId('ui-wife'));
   await page.getByLabel('Share all earlier viewings', {exact: false}).check();
   await page.getByRole('button', {name: 'Save companion', exact: true}).click();
   await expect(page.locator('#toast')).toContainText('earlier viewing');

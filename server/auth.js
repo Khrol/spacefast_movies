@@ -2,7 +2,7 @@ import {createRemoteJWKSet, jwtVerify} from 'jose';
 import {email, hash, newId, fail} from './domain.js';
 
 const SESSION_AGE = 7 * 86400000, CHALLENGE_AGE = 10 * 60000;
-const AUTH_VERSION = 2;
+const AUTH_VERSION = 3;
 const googleKeys = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'), {timeoutDuration: 8000});
 const publicUser = account => ({uid: account.id, email: account.email, displayName: account.name});
 const randomToken = () => newId() + newId();
@@ -41,17 +41,12 @@ export class Auth {
       tx.set(ref, {count: (data.count || 0) + 1, expiresAt: (bucket + 2) * seconds * 1000});
     });
   }
-  cookieName(kind) { return `${this.secrets.local === true ? '' : '__Host-'}reel_google_${kind}`; }
-  cookie(c, kind, token, age) {
-    c.header('Set-Cookie', `${this.cookieName(kind)}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${this.secrets.local === true ? '' : '; Secure'}`, {append: true});
-  }
-  token(c, kind) {
-    const name = this.cookieName(kind);
-    const value = c.req.header('Cookie')?.split(';').map(v => v.trim()).find(v => v.startsWith(`${name}=`))?.slice(name.length + 1) || '';
+  token(c) {
+    const value = c.req.header('X-Reel-Session') || '';
     return /^[a-f0-9]{64}$/.test(value) ? value : '';
   }
   async account(c) {
-    const token = this.token(c, 'session');
+    const token = this.token(c);
     if (!token) return null;
     const session = (await this.db.doc(`authSessions/${hash(token)}`).get()).data();
     if (!session || session.authVersion !== AUTH_VERSION || session.provider !== 'google' || !Number.isFinite(session.expiresAt) || session.expiresAt <= Date.now()) return null;
@@ -67,14 +62,15 @@ export class Auth {
       await this.limit(`google-start:${c.get('ip')}`);
       const token = randomToken(), nonce = randomToken();
       await this.db.doc(`authChallenges/${hash(token)}`).set({nonce, authVersion: AUTH_VERSION, expiresAt: Date.now() + CHALLENGE_AGE});
-      this.cookie(c, 'challenge', token, CHALLENGE_AGE / 1000);
-      return c.json({client_id: this.secrets.googleClientId, nonce});
+      // This secret stays in the initiating page's memory. It must accompany
+      // the signed nonce; a different page's challenge cannot redeem the JWT.
+      return c.json({client_id: this.secrets.googleClientId, nonce, challenge: token});
     });
     app.post('/auth/google', async c => {
       if (!this.secrets.googleClientId) fail('Google sign-in is not configured yet. Please try again later.', 503);
       await this.limit(`google-login:${c.get('ip')}`);
-      const challengeToken = this.token(c, 'challenge');
-      if (!challengeToken) fail('Your sign-in expired. Please try again.', 401);
+      const challengeToken = c.get('body').challenge;
+      if (typeof challengeToken !== 'string' || !/^[a-f0-9]{64}$/.test(challengeToken)) fail('Your sign-in expired. Please try again.', 401);
       const challengeRef = this.db.doc(`authChallenges/${hash(challengeToken)}`);
       const challenge = (await challengeRef.get()).data();
       if (!challenge || challenge.authVersion !== AUTH_VERSION || !Number.isFinite(challenge.expiresAt) || challenge.expiresAt <= Date.now()) fail('Your sign-in expired. Please try again.', 401);
@@ -100,18 +96,15 @@ export class Auth {
         if (isOwner && !owner) tx.create(ownerRef, {uid: account.id, subject: identity.subject});
         tx.set(identityRef, {uid: account.id});
         tx.delete(challengeRef);
-        const oldSession = this.token(c, 'session');
+        const oldSession = this.token(c);
         if (oldSession) tx.delete(this.db.doc(`authSessions/${hash(oldSession)}`));
         tx.create(this.db.doc(`authSessions/${hash(sessionToken)}`), {uid: account.id, authVersion: AUTH_VERSION, version: account.sessionVersion, provider: 'google', subject: account.googleSubject, expiresAt: Date.now() + SESSION_AGE});
         return account;
       });
-      this.cookie(c, 'session', sessionToken, SESSION_AGE / 1000);
-      this.cookie(c, 'challenge', '', 0);
-      return c.json({user: publicUser(account)});
+      return c.json({user: publicUser(account), session: sessionToken});
     });
     app.post('/auth/logout', async c => {
-      const token = this.token(c, 'session'); if (token) await this.db.doc(`authSessions/${hash(token)}`).delete();
-      this.cookie(c, 'session', '', 0); this.cookie(c, 'challenge', '', 0);
+      const token = this.token(c); if (token) await this.db.doc(`authSessions/${hash(token)}`).delete();
       return c.json({signedOut: true});
     });
     app.all('/auth/*', c => c.json({message: 'Not found.'}, 404));

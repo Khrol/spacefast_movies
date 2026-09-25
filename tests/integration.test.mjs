@@ -14,17 +14,16 @@ async function user(key, {verified = true, approved = true} = {}) {
   const address = `${key}@example.test`;
   if (!verified) {tokens[key] = 'identity_session=unverified'; return;}
   const challenge = await call(null, 'auth/google/challenge', 'POST', {});
-  const cookie = challenge.headers.getSetCookie()[0].split(';')[0];
-  const login = await call(null, 'auth/google', 'POST', {credential: await google.token(challenge.data.nonce, {sub: `test-${key}`, email: address, name: key, hd: 'example.test'})}, {Cookie: cookie});
+  const login = await call(null, 'auth/google', 'POST', {credential: await google.token(challenge.data.nonce, {sub: `test-${key}`, email: address, name: key, hd: 'example.test'}), challenge: challenge.data.challenge});
   assert.equal(login.status, 200, JSON.stringify(login.data));
   const uid = login.data.user.uid;
-  tokens[key] = login.headers.getSetCookie().find(c => c.startsWith('reel_google_session=')).split(';')[0];
+  tokens[key] = login.data.session;
   uids[key] = uid;
   await db.doc(`users/${uid}`).set({name: key, email: address, approved, complimentary: false, household_id: '', membership_epoch: uid, created_at: Date.now()});
   return uid;
 }
 async function call(who, route, method = 'GET', body, headers = {}) {
-  const response = await fetch(`${base}/api/${route}`, {method, headers: {'Content-Type': 'application/json', Origin: secrets.origin, ...(who ? {Cookie: tokens[who] || who} : {}), ...headers}, body: body === undefined ? undefined : JSON.stringify(body)});
+  const response = await fetch(`${base}/api/${route}`, {method, headers: {'Content-Type': 'application/json', Origin: secrets.origin, ...(who ? {'X-Reel-Session': tokens[who] || who} : {}), ...headers}, body: body === undefined ? undefined : JSON.stringify(body)});
   return {status: response.status, data: await response.json(), headers: response.headers};
 }
 async function ok(who, route, method = 'GET', body, expected = 200) { const result = await call(who, route, method, body); assert.equal(result.status, expected, JSON.stringify(result.data)); return result.data; }

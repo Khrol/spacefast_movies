@@ -20,7 +20,7 @@ after(async () => { await browser?.close(); await server?.close(); binding.close
 async function googleBrowser(page, who) {
   await page.exposeFunction('testGoogleCredential', nonce => google.token(nonce, {sub: `ui-${who}`, email: `ui-${who}@example.test`, name: who, hd: 'example.test'}));
   // Stub only Google's external SDK. The app still submits a signed JWT to its
-  // real challenge/login endpoints and receives a real HttpOnly session cookie.
+  // real challenge/login endpoints and receives a real app session.
   await page.route('https://accounts.google.com/gsi/client', route => route.fulfill({contentType: 'text/javascript', body: `
     window.google = {accounts: {id: {
       initialize(options) {this.options = options;},
@@ -53,6 +53,8 @@ test('Google is the only sign-in and a new account opens an empty diary immediat
   await page.getByRole('button', {name: 'Continue with Google', exact: true}).click();
   await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
   await expect(page.locator('.movie-card')).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
   await expect(page.getByRole('button', {name: 'Membership', exact: true})).toHaveCount(0);
   await page.getByRole('button', {name: 'Sign out', exact: true}).click();
   await expect(page.getByRole('button', {name: 'Continue with Google', exact: true})).toBeVisible();

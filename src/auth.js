@@ -1,4 +1,4 @@
-import {auth, api} from './api.js';
+import {auth, api, setSession} from './api.js';
 const listeners = new Set();
 let googleScript;
 function setUser(user, notify = true) {
@@ -6,7 +6,7 @@ function setUser(user, notify = true) {
   if (notify) for (const callback of listeners) void callback(user);
   return user;
 }
-export async function initializeAuth() {setUser((await api('auth/session')).user, false);}
+export async function initializeAuth() {const {user} = await api('auth/session'); if (!user) setSession(''); setUser(user, false);}
 export function onAuthStateChanged(_auth, callback) {listeners.add(callback); void callback(auth.currentUser); return () => listeners.delete(callback);}
 function loadGoogle() {
   if (window.google?.accounts?.id) return Promise.resolve();
@@ -22,10 +22,13 @@ function loadGoogle() {
   return googleScript;
 }
 export async function renderGoogleSignIn(container, onError, {demo = false} = {}) {
-  const complete = async credential => {
+  const complete = async (credential, challenge) => {
     if (!container.isConnected || container.getAttribute('aria-busy') === 'true') return;
     container.setAttribute('aria-busy', 'true');
-    try {setUser((await api('auth/google', 'POST', {credential})).user);}
+    try {
+      const result = await api('auth/google', 'POST', {credential, challenge});
+      setSession(result.session); setUser(result.user);
+    }
     catch (error) {if (container.isConnected) onError(error);}
     finally {container.setAttribute('aria-busy', 'false');}
   };
@@ -38,7 +41,7 @@ export async function renderGoogleSignIn(container, onError, {demo = false} = {}
         try {
           const challenge = await api('auth/google/challenge', 'POST', {});
           const {credential} = await api('dev/google', 'POST', {person, nonce: challenge.nonce});
-          await complete(credential);
+          await complete(credential, challenge.challenge);
         } catch (error) {onError(error);} finally {button.disabled = false;}
       };
       container.append(button);
@@ -54,12 +57,25 @@ export async function renderGoogleSignIn(container, onError, {demo = false} = {}
   container.replaceChildren();
   google.accounts.id.initialize({
     client_id: challenge.client_id, nonce: challenge.nonce, auto_select: false, ux_mode: 'popup',
-    callback: ({credential}) => complete(credential),
+    callback: ({credential}) => complete(credential, challenge.challenge),
   });
-  google.accounts.id.renderButton(container, {type: 'standard', theme: 'outline', size: 'large', text: 'continue_with', shape: 'rectangular', width: Math.min(360, container.clientWidth)});
+  let width = 0;
+  const renderButton = () => {
+    const nextWidth = Math.floor(Math.min(360, container.clientWidth));
+    if (!nextWidth || nextWidth === width) return;
+    width = nextWidth; container.replaceChildren();
+    google.accounts.id.renderButton(container, {type: 'standard', theme: 'outline', size: 'large', text: 'continue_with', shape: 'rectangular', width});
+  };
+  renderButton();
+  const resize = new ResizeObserver(() => {
+    if (!container.isConnected) {resize.disconnect(); return;}
+    renderButton();
+  });
+  resize.observe(container);
 }
 export async function signOut() {
   await api('auth/logout', 'POST', {});
+  setSession('');
   window.google?.accounts?.id?.disableAutoSelect();
   setUser(null);
 }

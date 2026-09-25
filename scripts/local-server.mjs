@@ -5,6 +5,7 @@ import {readFile} from 'node:fs/promises';
 import {resolve, extname, sep} from 'node:path';
 import {Database} from '../server/database.js';
 import {createApp} from '../server/app.js';
+import {contentSecurityPolicy} from './headers.mjs';
 
 export function sqliteBinding(filename = ':memory:') {
   const sql = new DatabaseSync(filename);
@@ -32,6 +33,7 @@ export function serve(app, {port = 0, staticRoot = resolve('dist'), handleLocal}
       const url = new URL(req.url, `http://127.0.0.1:${server.address().port}`);
       if (await handleLocal?.(req, res, url)) return;
       if (!url.pathname.startsWith('/api/')) {
+        res.setHeader('Content-Security-Policy', contentSecurityPolicy);
         res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
         res.setHeader('Referrer-Policy', 'no-referrer-when-downgrade');
         const requested = resolve(staticRoot, '.' + decodeURIComponent(url.pathname));

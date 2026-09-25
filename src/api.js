@@ -1,6 +1,14 @@
 export const auth = {currentUser: null};
+let sessionToken = '';
+try {sessionToken = sessionStorage.getItem('reel_google_session') || '';} catch {}
+export function setSession(token) {
+  sessionToken = typeof token === 'string' && /^[a-f0-9]{64}$/.test(token) ? token : '';
+  // Keep the bearer token out of URLs, persistent localStorage and cookies.
+  // If browser storage is disabled, an in-memory session still works.
+  try {if (sessionToken) sessionStorage.setItem('reel_google_session', sessionToken); else sessionStorage.removeItem('reel_google_session');} catch {}
+}
 export async function api(path, method = 'GET', body) {
-  const response = await fetch(`/api/${path}`, {method, credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, cache: 'no-store', body: body === undefined ? undefined : JSON.stringify(body)});
+  const response = await fetch(`/api/${path}`, {method, credentials: 'omit', headers: {'Content-Type': 'application/json', ...(sessionToken ? {'X-Reel-Session': sessionToken} : {})}, cache: 'no-store', body: body === undefined ? undefined : JSON.stringify(body)});
   let data; try { data = await response.json(); } catch { throw new Error('The server did not respond as expected. Please try again.'); }
   if (!response.ok) { const error = new Error(data.message || 'The request failed. Please try again.'); error.status = response.status; throw error; }
   return data;

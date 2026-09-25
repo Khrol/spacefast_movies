@@ -36,7 +36,7 @@ npm run build
 npm run test:integration
 ```
 
-Tests use RSA-signed fixture tokens with an injected test key set, never a production bypass. They cover signature, issuer, audience, expiry, nonce and verified-email checks; atomic challenge consumption; secure session cookies, logout and revocation; CSRF; owner binding; registration and private diary isolation. Integration and browser tests exercise diary editing, sharing, administration and mobile layout. Browser tests replace only Google's external SDK while using the real app authentication endpoints. A real hosted Google login remains a separate verification step. On macOS tests use installed Chrome; elsewhere install Playwright Chromium.
+Tests use RSA-signed fixture tokens with an injected test key set, never a production bypass. They cover signature, issuer, audience, expiry, nonce and verified-email checks; atomic challenge consumption; per-tab sessions, logout and revocation; CSRF; owner binding; registration and private diary isolation. Integration and browser tests exercise diary editing, sharing, administration and mobile layout. Browser tests replace only Google's external SDK while using the real app authentication endpoints. A real hosted Google login remains a separate verification step. On macOS tests use installed Chrome; elsewhere install Playwright Chromium.
 
 ## Publish to the existing Space
 
@@ -63,9 +63,11 @@ The CLI packaging workaround is in `scripts/package.mjs`. It copies the declared
 
 ## Authentication and existing data
 
-The backend verifies Google's RS256 signature against Google's rotating public keys, issuer, audience, expiry, issuance time, verified email and a server-generated nonce. A ten-minute, single-use challenge is bound to an HttpOnly cookie and consumed atomically when creating a session. JSON login requests also require the exact app Origin; tokens and cookies are never forwarded to Spacefast Identity.
+The backend verifies Google's RS256 signature against Google's rotating public keys, issuer, audience, expiry, issuance time, verified email and a server-generated nonce. A ten-minute, single-use challenge secret stays in the initiating page’s memory and is consumed atomically with its matching signed nonce when creating a session. JSON login requests also require the exact app Origin; tokens and cookies are never forwarded to Spacefast Identity.
 
-Seven-day sessions use random 256-bit tokens stored only as hashes in the database. Hosted cookies are Secure, HttpOnly, SameSite=Lax and host-only (`__Host-` prefix). Every request checks expiry and the account's session version. Logout deletes the server session and clears its cookie. Google account revocation does not automatically revoke an existing app session; server-side account session-version rotation can revoke all of that account's sessions.
+Seven-day sessions use random 256-bit tokens stored only as hashes in the database. The browser keeps its token in `sessionStorage` for the current tab and sends it only to the same-origin movie API through `X-Reel-Session`. Refreshing retains sign-in; a separate fresh tab requires sign-in. If browser storage is unavailable, the session lives only in memory. Every request checks expiry and the account’s session version. Logout deletes the server session and clears browser storage. Google account revocation does not automatically revoke an existing app session; server-side account session-version rotation can revoke all of that account's sessions.
+
+The hosted Functions proxy was verified to drop `Set-Cookie` response headers. This transport avoids that dependency and does not rely on Spacefast's native accounts. Unlike HttpOnly cookies, tab session tokens are accessible to same-origin JavaScript. The app escapes user content and serves a Content Security Policy that blocks inline scripts and limits external scripts to Google's sign-in SDK. Tokens never appear in URLs, cookies, logs or persistent `localStorage`.
 
 Google's stable `sub` identifies an account, including after email changes. Existing direct-Google accounts with a verified subject mapping retain their diary. Native Spacefast identities, old password sessions and unlinked accounts are not accepted or linked by email. Their stored data stays untouched. No data is imported, and there are no password, approval or payment endpoints.
 

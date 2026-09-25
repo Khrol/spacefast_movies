@@ -7,10 +7,10 @@ import {googleFixture} from './google-fixture.mjs';
 
 const google = await googleFixture(), origin = 'https://cinema.example.test';
 function client(app) {
-  return async (path, body, cookie = '', from = origin) => {
-    const response = await app.request(`${origin}/api/${path}`, {method: body === undefined ? 'GET' : 'POST', headers: {'Content-Type': 'application/json', Origin: from, Cookie: cookie}, body: body === undefined ? undefined : JSON.stringify(body)});
-    const cookies = response.headers.getSetCookie();
-    return {status: response.status, data: await response.json(), cookie: (cookies.find(c => c.startsWith('__Host-reel_google_session=')) || cookies[0])?.split(';')[0], headers: response.headers};
+  return async (path, body, session = '', from = origin, extraHeaders = {}) => {
+    const response = await app.request(`${origin}/api/${path}`, {method: body === undefined ? 'GET' : 'POST', headers: {'Content-Type': 'application/json', Origin: from, 'X-Reel-Session': session, ...extraHeaders}, body: body === undefined ? undefined : JSON.stringify(body)});
+    const data = await response.json();
+    return {status: response.status, data, session: data.session, headers: response.headers};
   };
 }
 test('Google signatures, audience, issuer, expiry, nonce and verified email are mandatory', async () => {
@@ -28,7 +28,7 @@ test('new Google accounts get immediate private diary access, secure sessions an
   const app = createApp({db, secrets: {origin, googleClientId: google.clientId, ownerEmail: 'owner@gmail.com'}, googleKeys: google.keys}), call = client(app);
   const signin = async claims => {
     const challenge = await call('auth/google/challenge', {});
-    return call('auth/google', {credential: await google.token(challenge.data.nonce, claims)}, challenge.cookie);
+    return call('auth/google', {credential: await google.token(challenge.data.nonce, claims), challenge: challenge.data.challenge});
   };
   try {
     // Old configuration must not revive either access gate.
@@ -36,40 +36,44 @@ test('new Google accounts get immediate private diary access, secure sessions an
     assert.equal((await call('auth/google/challenge', {}, '', 'https://attacker.example')).status, 403);
     const challenge = await call('auth/google/challenge', {}), credential = await google.token(challenge.data.nonce);
     assert.equal((await call('auth/google', {credential})).status, 401);
-    assert.equal((await call('auth/google', {credential}, challenge.cookie, 'https://attacker.example')).status, 403);
-    const concurrent = await Promise.all([call('auth/google', {credential}, challenge.cookie), call('auth/google', {credential}, challenge.cookie)]);
+    assert.equal((await call('auth/google', {credential, challenge: challenge.data.challenge}, '', 'https://attacker.example')).status, 403);
+    const different = await call('auth/google/challenge', {});
+    assert.equal((await call('auth/google', {credential, challenge: different.data.challenge})).status, 401, 'A credential is bound to its own challenge');
+    const concurrent = await Promise.all([call('auth/google', {credential, challenge: challenge.data.challenge}, ''), call('auth/google', {credential, challenge: challenge.data.challenge}, '')]);
     assert.deepEqual(concurrent.map(r => r.status).sort(), [200, 401]);
     const login = concurrent.find(r => r.status === 200);
-    assert.match(login.headers.get('set-cookie'), /HttpOnly; SameSite=Lax/);
-    assert.match(login.headers.get('set-cookie'), /Secure/);
-    assert.match(login.cookie, /^__Host-reel_google_session=/);
-    assert.equal((await call('session', undefined, login.cookie)).data.admin, false);
-    assert.equal((await call('bootstrap', undefined, login.cookie)).status, 200);
+    assert.equal(login.headers.get('set-cookie'), null);
+    assert.match(login.session, /^[a-f0-9]{64}$/);
+    assert.match(login.headers.get('cache-control'), /no-store/);
+    assert.equal((await call('entries', undefined, '', origin, {Cookie: `reel_google_session=${login.session}`})).status, 401);
+    assert.equal((await call('entries', undefined, '', origin, {Authorization: `Bearer ${login.session}`})).status, 401);
+    assert.equal((await call('session', undefined, login.session)).data.admin, false);
+    assert.equal((await call('bootstrap', undefined, login.session)).status, 200);
     assert.equal((await call('config')).data.auth_provider, 'google');
     assert.equal((await call('dev/google', {})).status, 401);
     const entry = {movie: {title: 'My first film'}, status: 'watched', scope: 'personal', watched_on: '2024-01-01'};
-    assert.equal((await call('entries', entry, login.cookie)).status, 201);
+    assert.equal((await call('entries', entry, login.session)).status, 201);
     const outsider = await signin({sub: 'google-outsider', email: 'outsider@example.com'});
     assert.equal(outsider.status, 200, 'Third-party addresses can join through Google');
-    assert.equal((await call('entries', undefined, outsider.cookie)).data.total, 0);
-    assert.equal((await call('admin/users', undefined, outsider.cookie)).status, 403);
+    assert.equal((await call('entries', undefined, outsider.session)).data.total, 0);
+    assert.equal((await call('admin/users', undefined, outsider.session)).status, 403);
     const returning = await signin({email: 'renamed@gmail.com'});
     assert.equal(returning.data.user.uid, login.data.user.uid, 'Stable Google subject owns the diary even when email changes');
-    assert.equal((await call('entries', undefined, returning.cookie)).data.total, 1);
-    await call('auth/logout', {}, returning.cookie);
-    assert.equal((await call('entries', undefined, returning.cookie)).status, 401);
+    assert.equal((await call('entries', undefined, returning.session)).data.total, 1);
+    await call('auth/logout', {}, returning.session);
+    assert.equal((await call('entries', undefined, returning.session)).status, 401);
     const owner = await signin({sub: 'google-owner', email: 'owner@gmail.com'});
-    assert.equal((await call('session', undefined, owner.cookie)).data.admin, true);
-    assert.equal((await call('admin/users', undefined, owner.cookie)).status, 200);
+    assert.equal((await call('session', undefined, owner.session)).data.admin, true);
+    assert.equal((await call('admin/users', undefined, owner.session)).status, 200);
     for (const path of ['auth/login', 'auth/signup', 'auth/setup', 'auth/reset', 'auth/complete-reset', 'auth/resend', 'billing/checkout', 'billing/webhook/live', 'membership', 'invitations']) assert.equal((await call(path, {})).status, 404, path);
     const expired = await call('auth/google/challenge', {});
-    await db.doc(`authChallenges/${hash(expired.cookie.split('=')[1])}`).update({expiresAt: 1});
-    assert.equal((await call('auth/google', {credential: await google.token(expired.data.nonce)}, expired.cookie)).status, 401);
+    await db.doc(`authChallenges/${hash(expired.data.challenge)}`).update({expiresAt: 1});
+    assert.equal((await call('auth/google', {credential: await google.token(expired.data.nonce), challenge: expired.data.challenge})).status, 401);
   } finally {binding.close();}
 });
 test('native and legacy credentials cannot sign in or claim a diary by email', async () => {
   const {db, binding} = await localDatabase(), call = client(createApp({db, secrets: {origin, googleClientId: google.clientId, ownerEmail: 'owner@gmail.com'}, googleKeys: google.keys}));
-  const signin = async claims => {const c = await call('auth/google/challenge', {}); return call('auth/google', {credential: await google.token(c.data.nonce, claims)}, c.cookie);};
+  const signin = async claims => {const c = await call('auth/google/challenge', {}); return call('auth/google', {credential: await google.token(c.data.nonce, claims), challenge: c.data.challenge});};
   try {
     await db.doc('accounts/legacy').set({id: 'legacy', email: 'owner@gmail.com', verified: true, admin: true, password: 'old-hash', sessionVersion: 'old'});
     await db.doc(`accountEmails/${hash('owner@gmail.com')}`).set({uid: 'legacy'});
@@ -77,16 +81,16 @@ test('native and legacy credentials cannot sign in or claim a diary by email', a
     const legacyToken = 'a'.repeat(64);
     await db.doc(`authSessions/${hash(legacyToken)}`).set({uid: 'legacy', provider: 'google', version: 'old', expiresAt: Date.now() + 3600000});
     for (const cookie of [`__Host-reel_session=${legacyToken}`, `__Host-reel_google_session=${legacyToken}`, 'identity_session=native-session']) {
-      assert.equal((await call('auth/session', undefined, cookie)).data.user, null);
+      assert.equal((await call('auth/session', undefined, '', origin, {Cookie: cookie})).data.user, null);
     }
     const owner = await signin({sub: 'google-owner', email: 'owner@gmail.com'});
     assert.notEqual(owner.data.user.uid, 'legacy'); assert.notEqual(owner.data.user.uid, 'sf_previous');
-    assert.equal((await call('session', undefined, owner.cookie)).data.admin, true);
+    assert.equal((await call('session', undefined, owner.session)).data.admin, true);
     const other = await signin({sub: 'another-owner', email: 'owner@gmail.com'});
-    assert.equal((await call('session', undefined, other.cookie)).data.admin, false);
+    assert.equal((await call('session', undefined, other.session)).data.admin, false);
     const renamed = await signin({sub: 'google-owner', email: 'renamed@gmail.com'});
     assert.equal(renamed.data.user.uid, owner.data.user.uid);
-    assert.equal((await call('session', undefined, renamed.cookie)).data.admin, true);
+    assert.equal((await call('session', undefined, renamed.session)).data.admin, true);
     assert.equal((await db.doc('accounts/legacy').get()).data().password, 'old-hash', 'Unlinked data stays untouched');
   } finally {binding.close();}
 });
@@ -94,25 +98,25 @@ test('app sessions expire, revoke, rotate on login and are stored only as hashes
   const {db, binding} = await localDatabase(), call = client(createApp({db, secrets: {origin, googleClientId: google.clientId}, googleKeys: google.keys}));
   const signin = async (existing = '') => {
     const c = await call('auth/google/challenge', {});
-    return call('auth/google', {credential: await google.token(c.data.nonce)}, [c.cookie, existing].filter(Boolean).join('; '));
+    return call('auth/google', {credential: await google.token(c.data.nonce), challenge: c.data.challenge}, existing);
   };
   try {
-    const first = await signin(), second = await signin(first.cookie);
-    assert.notEqual(first.cookie, second.cookie);
-    assert.equal((await call('entries', undefined, first.cookie)).status, 401);
-    const token = second.cookie.split('=')[1], sessionRef = db.doc(`authSessions/${hash(token)}`);
+    const first = await signin(), second = await signin(first.session);
+    assert.notEqual(first.session, second.session);
+    assert.equal((await call('entries', undefined, first.session)).status, 401);
+    const token = second.session, sessionRef = db.doc(`authSessions/${hash(token)}`);
     assert.equal((await db.doc(`authSessions/${token}`).get()).exists, false);
-    assert.equal((await call('entries', undefined, second.cookie)).status, 200);
+    assert.equal((await call('entries', undefined, second.session)).status, 200);
     await sessionRef.update({expiresAt: 1});
-    assert.equal((await call('entries', undefined, second.cookie)).status, 401);
+    assert.equal((await call('entries', undefined, second.session)).status, 401);
     const fresh = await signin();
     await db.doc(`accounts/${fresh.data.user.uid}`).update({sessionVersion: 'revoked'});
-    assert.equal((await call('entries', undefined, fresh.cookie)).status, 401);
+    assert.equal((await call('entries', undefined, fresh.session)).status, 401);
     const last = await signin();
-    assert.equal((await call('auth/logout', {}, last.cookie, 'https://attacker.example')).status, 403);
-    assert.equal((await call('entries', undefined, last.cookie)).status, 200);
-    await call('auth/logout', {}, last.cookie);
-    assert.equal((await call('entries', undefined, last.cookie)).status, 401);
+    assert.equal((await call('auth/logout', {}, last.session, 'https://attacker.example')).status, 403);
+    assert.equal((await call('entries', undefined, last.session)).status, 200);
+    await call('auth/logout', {}, last.session);
+    assert.equal((await call('entries', undefined, last.session)).status, 401);
   } finally {binding.close();}
 });
 test('missing Google configuration fails closed', async () => {

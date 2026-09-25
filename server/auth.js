@@ -8,7 +8,7 @@ const publicUser = account => ({uid: account.id, email: account.email, displayNa
 // Validate the Space's Identity session on every request. No second app session
 // or session cache can outlive suspension or revocation in Spacefast Users.
 export class Auth {
-  constructor(db, secrets, identityFetch = fetch) {this.db = db; this.secrets = secrets; this.fetch = identityFetch;}
+  constructor(db, secrets, identityFetch = fetch) {this.db = db; this.secrets = secrets; this.fetch = (...args) => identityFetch(...args);}
   async identity(path, c, {body, csrf} = {}) {
     const origin = this.secrets.identityOrigin || this.secrets.origin;
     if (!origin) fail('Spacefast sign-in is not configured for this environment.', 503);
@@ -20,10 +20,13 @@ export class Auth {
     if (body !== undefined) headers.Origin = url.origin;
     let response;
     try {
-      response = await this.fetch(url, {method: body === undefined ? 'GET' : 'POST', headers, redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10000), ...(body === undefined ? {} : {body: JSON.stringify(body)})});
-    } catch {fail('Spacefast sign-in is temporarily unavailable. Please try again.', 503);}
+      response = await this.fetch(url.href, {method: body === undefined ? 'GET' : 'POST', headers, redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(10000), ...(body === undefined ? {} : {body: JSON.stringify(body)})});
+    } catch (error) {
+      console.error('Spacefast Identity request failed:', error.name, error.code || 'no_code');
+      fail('Spacefast sign-in is temporarily unavailable. Please try again.', 503);
+    }
     if ([401, 403].includes(response.status)) return null;
-    if (!response.ok) fail('Spacefast sign-in is temporarily unavailable. Please try again.', 503);
+    if (!response.ok) {console.error('Spacefast Identity returned HTTP', response.status); fail('Spacefast sign-in is temporarily unavailable. Please try again.', 503);}
     let data; try {data = (await response.json()).data;} catch {fail('Spacefast sign-in returned an invalid response.', 503);}
     if (!data || typeof data !== 'object') fail('Spacefast sign-in returned an invalid response.', 503);
     return data;

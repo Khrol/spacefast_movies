@@ -60,7 +60,8 @@ test('suspension, revocation, expiry, unverified email and non-Google identities
     assert.equal((await call('entries', '__Host-reel_session=' + 'a'.repeat(64), undefined, origin, {'X-User-Id': 'reader', Authorization: 'Bearer forged'})).status, 401);
     identity.failure(500); assert.equal((await call('entries', fresh)).status, 503);
     assert.ok(identity.requests.every(r => r.url.startsWith(origin + '/__zero/auth/api/')));
-    assert.ok(identity.requests.every(r => r.options.redirect === 'error'));
+    assert.ok(identity.requests.every(r => r.options.redirect === 'manual'));
+    identity.failure(302); assert.equal((await call('entries', fresh)).status, 503, 'A redirect cannot forward identity cookies to another host');
   } finally {binding.close();}
 });
 test('owner privileges bind to one verified Spacefast identity, never an email reassignment', async () => {

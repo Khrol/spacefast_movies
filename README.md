@@ -17,7 +17,7 @@ Accounts and sessions belong to [Spacefast Users](https://my.spacefast.com/igor-
 
 The first verified Spacefast account matching the owner email receives administrator access. Its stable account ID keeps that role even if its email changes; a later account with the same email cannot take it over. Other users receive a private diary immediately. Administration links to Spacefast Users for account and session management.
 
-The app exposes only the Google sign-in button and requires a verified, active Spacefast account with a Google identity linked. Spacefast itself owns the hosted Identity screens and available authentication methods. Do not enable additional providers in its dashboard. Sign-in completes in a popup; the diary opens after the backend validates the native session.
+The app exposes only the Google sign-in button and requires a verified, active Spacefast account with a Google identity linked. Public access excludes the native email, password and passkey sign-in endpoints; Google OAuth routes remain public. Spacefast owns the hosted Identity screens. Do not enable additional providers in its dashboard. Sign-in completes in a popup; the diary opens after the backend validates the native session.
 
 ## Run locally
 
@@ -52,7 +52,7 @@ Team: **Igor's Team** (`igor-team`). Space: **Reel Together**, `spc_872d97161d58
 
 `sf.jsonc` makes the site publicly reachable so everyone can reach Google sign-in. The API requires a verified Spacefast session with a linked Google identity for diary data. Only `/api/*` reaches the worker; other assets are static. Server source, environment files, dependencies and local data are excluded from the publish.
 
-The CLI packaging workaround is in `scripts/package.mjs`. It copies the declared database/fetch capabilities into the supported Functions artifact metadata while retaining the exact compiled bundle digest and routes. The archive omits the runtime block so prebuilt publication does not compile the worker again. Use `npm run deploy`, not a direct publish of `dist/`, until the platform handles both declarations correctly.
+The CLI packaging workaround is in `scripts/package.mjs`. It copies the declared database/fetch capabilities into the supported Functions artifact metadata while retaining the exact compiled bundle digest and routes. The archive omits the runtime block so prebuilt publication does not compile the worker again. `scripts/deploy.mjs` also preserves Users settings: CLI 0.4.1 resets them when publishing. Restoration checks the live version and settings digest to avoid overwriting concurrent dashboard edits. Use `npm run deploy`, not a direct publish of `dist/`, until these CLI issues are fixed.
 
 ## Server variables
 

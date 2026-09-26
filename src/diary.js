@@ -1,4 +1,5 @@
 import {api} from './api.js';
+import {posterPath} from './posters.js';
 export function mountDiary() {
   'use strict';
   const root = document.getElementById('rt-app');
@@ -12,6 +13,9 @@ export function mountDiary() {
   const sectionChanged = () => { ++viewRequest; ++state.request; };
   window.ReelDiaryController?.abort();
   window.ReelDiaryController = new AbortController();
+  root.addEventListener('error', event => {
+    if (event.target instanceof HTMLImageElement && event.target.classList.contains('poster-copy')) event.target.remove();
+  }, {capture: true, signal: window.ReelDiaryController.signal});
   window.addEventListener('reel-section', sectionChanged, {signal: window.ReelDiaryController.signal});
   function toast(message) {
     const el = document.getElementById('toast');
@@ -33,14 +37,9 @@ export function mountDiary() {
     });
   }
   function poster(movie, small = false) {
-    if (/^https:\/\/(kinopoiskapiunofficial\.tech\/images\/posters\/|avatars\.mds\.yandex\.net\/get-kinopoisk-image\/|st\.kp\.yandex\.net\/images\/)[^?#]+$/.test(movie.poster_url || '')) {
-      return `<div class="poster${small ? ' poster-small' : ''}"><img src="${escape(movie.poster_url)}" alt="${escape(movie.title)} poster" loading="lazy" referrerpolicy="no-referrer"></div>`;
-    }
-    if (/^\/[a-zA-Z0-9]+\.(jpg|png)$/.test(movie.poster_path || '')) {
-      return `<div class="poster${small ? ' poster-small' : ''}"><img src="https://image.tmdb.org/t/p/w342${escape(movie.poster_path)}" alt="${escape(movie.title)} poster" loading="lazy" referrerpolicy="no-referrer"></div>`;
-    }
+    const path = posterPath(movie);
     const hue = [...movie.title].reduce((n, c) => n + c.charCodeAt(0), 0) % 4;
-    return `<div class="poster poster-art art-${hue}${small ? ' poster-small' : ''}" aria-hidden="true"><span class="poster-edition">THE PERSONAL COLLECTION</span><span class="poster-shape"></span><strong>${escape(movie.title)}</strong><span class="poster-year">${movie.release_year || movie.year || 'A NIGHT AT THE MOVIES'}</span></div>`;
+    return `<div class="poster poster-art art-${hue}${small ? ' poster-small' : ''}"><span class="poster-edition" aria-hidden="true">THE PERSONAL COLLECTION</span><span class="poster-shape" aria-hidden="true"></span><strong aria-hidden="true">${escape(movie.title)}</strong><span class="poster-year" aria-hidden="true">${movie.release_year || movie.year || 'A NIGHT AT THE MOVIES'}</span>${path ? `<img class="poster-copy" src="${path}" alt="${escape(movie.title)} poster" loading="lazy" referrerpolicy="no-referrer">` : ''}</div>`;
   }
   function dateLabel(date) {
     return new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(`${date}T12:00:00`));

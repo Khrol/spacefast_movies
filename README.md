@@ -75,6 +75,8 @@ Google's stable `sub` identifies an account, including after email changes. Exis
 
 The Spacefast D1-shaped binding uses a MySQL broker. Since multiple broker calls are not a pinned SQL transaction, the adapter uses a revision-checked JSON snapshot in `reel_state`. Atomic updates and retries preserve multi-document transactions, uniqueness and sharing revocation. State is capped at **8 MiB** and serialized for each write; this remains a small-app store, even though signup is open. Expired rate limits, sessions, sign-in challenges and catalog caches are cleaned on writes.
 
-Use Spacefast's database console to back up `reel_state`; Functions databases do not support the Zero-only `sf db export` command. Code rollback does not roll back data. Firebase is not used, and no Firebase data was imported.
+Posters are copied on first display into a separate `reel_posters` table, outside the diary's 8 MiB snapshot. `/api/posters/{provider}/{id}` serves the durable copy with browser caching, including for existing entries. Only server-verified catalog records supply the upstream URL; redirects, non-bitmap responses, and images over 1 MiB are refused. No catalog credentials or visitor session headers are forwarded to image hosts. Failed copies leave the local poster artwork visible. The browser's image policy allows only our origin and data URLs.
+
+Use Spacefast's database console to back up `reel_state` and `reel_posters`; Functions databases do not support the Zero-only `sf db export` command. Code rollback does not roll back data. Firebase is not used, and no Firebase data was imported.
 
 Interface and assets originate from the GPL-2.0-or-later Reel Together WordPress plugin in `Khrol/films`, via `Khrol/movies`. This port retains that license.

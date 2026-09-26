@@ -2,9 +2,10 @@ import {Hono} from 'hono';
 import {Auth} from './auth.js';
 import {AppError, fail, hash, id} from './domain.js';
 import {Catalog} from './catalog.js';
+import {Posters} from './posters.js';
 import {DiaryStore, row} from './store.js';
 
-export function createApp({db, secrets = {}, catalog = new Catalog(db, secrets), googleKeys}) {
+export function createApp({db, secrets = {}, catalog = new Catalog(db, secrets), posters = new Posters(db), googleKeys}) {
   const app = new Hono(), router = new Hono(), store = new DiaryStore(db, catalog), auth = new Auth(db, secrets, googleKeys);
   router.use('*', async (c, next) => {
     c.header('Cache-Control', 'private, no-store, max-age=0');
@@ -38,6 +39,9 @@ export function createApp({db, secrets = {}, catalog = new Catalog(db, secrets),
   };
   routes.get('/health', (_req, res) => res.json({ok: true}));
   routes.get('/config', (_req, res) => res.json({...auth.config(), ...(secrets.localGoogle ? {local_google: true} : {})}));
+  // Public catalog artwork contains no diary or account data. Images need no
+  // session token in their URL and are served only from our persistent copies.
+  router.get('/posters/:provider/:id', c => posters.response(c.req.param('provider'), c.req.param('id'), c.req.raw));
   router.all('/billing/*', c => c.json({message: 'Not found.'}, 404));
   router.all('/membership', c => c.json({message: 'Not found.'}, 404));
   router.all('/invitations', c => c.json({message: 'Not found.'}, 404));

@@ -17,3 +17,4 @@
 
 
 .reel-together-body .share-consent{display:grid;grid-template-columns:16px minmax(0,1fr);align-items:start;gap:10px;max-width:65ch;margin:16px 0 8px;font-size:12px;line-height:1.5;white-space:normal}.reel-together-body .share-consent input[type=checkbox]{box-sizing:border-box;appearance:auto;display:block;width:16px;min-width:16px;max-width:16px;height:16px;min-height:16px;margin:1px 0 0;padding:0;box-shadow:none}.reel-together-body .share-consent>span{min-width:0;font:inherit;color:inherit;overflow-wrap:anywhere}
+.poster .poster-copy{position:absolute;inset:0;z-index:2}

@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "node scripts/build.mjs",
-    "test": "node --test tests/unit.test.mjs tests/database.test.mjs tests/auth.test.mjs",
+    "test": "node --test tests/unit.test.mjs tests/database.test.mjs tests/auth.test.mjs tests/posters.test.mjs",
     "test:integration": "node --test --test-concurrency=1 tests/integration.test.mjs tests/browser.test.mjs",
     "check": "npm test && npm run build && npm run test:integration",
     "deploy": "node scripts/deploy.mjs"

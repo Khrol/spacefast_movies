@@ -6,6 +6,8 @@ import {createApp, localDatabase, serve} from '../scripts/local-server.mjs';
 import {googleFixture} from './google-fixture.mjs';
 import {hash} from '../server/domain.js';
 import {localGoogle} from '../scripts/local-google.mjs';
+import {Catalog} from '../server/catalog.js';
+import {Posters} from '../server/posters.js';
 const {db, binding} = await localDatabase();
 const google = await googleFixture();
 let server;
@@ -48,6 +50,63 @@ async function login(page, who) {
   await page.getByRole('button', {name: 'Continue with Google', exact: true}).click();
   await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
 }
+test('saved and searched posters load from our origin and reuse persistent copies', {timeout: 60000}, async () => {
+  const local = await localDatabase(), upstream = new Map();
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9x8AAAAASUVORK5CYII=', 'base64');
+  const kpSource = 'https://kinopoiskapiunofficial.tech/images/posters/kp_small/430.jpg';
+  const movies = [
+    {title: 'Shrek', year: 2001, kinopoisk_id: 430, poster_url: kpSource},
+    {title: 'Fight Club', year: 1999, tmdb_id: 550, poster_path: '/abc123.jpg'},
+    {title: 'Missing poster', year: 2000, kinopoisk_id: 431, poster_url: kpSource.replace('430', '431')},
+  ];
+  for (const movie of movies) await local.db.doc(`catalogMovies/${movie.kinopoisk_id ? 'kinopoisk_' + movie.kinopoisk_id : 'tmdb_' + movie.tmdb_id}`).set(movie);
+  const secrets = {googleClientId: google.clientId, kinopoiskToken: 'fixture', tmdbToken: 'fixture'};
+  const posters = new Posters(local.db, async url => {
+    upstream.set(url, (upstream.get(url) || 0) + 1);
+    return url.includes('431') ? new Response(null, {status: 404}) : new Response(png);
+  });
+  const catalog = new Catalog(local.db, secrets, async url => Response.json(url.hostname === 'api.themoviedb.org'
+    ? {results: [{id: 550, title: 'Fight Club', release_date: '1999-01-01', poster_path: '/abc123.jpg'}]}
+    : {items: [{kinopoiskId: 430, nameRu: 'Shrek', year: 2001, posterUrlPreview: kpSource}]}));
+  const posterServer = await serve(createApp({db: local.db, secrets, posters, catalog, googleKeys: google.keys}));
+  const context = await browser.newContext({viewport: {width: 1440, height: 1000}}), page = await context.newPage(), externalImages = [];
+  page.on('request', r => {if (r.resourceType() === 'image' && new URL(r.url()).origin !== posterServer.base) externalImages.push(r.url());});
+  try {
+    await googleBrowser(page, 'poster-reader');
+    await page.goto(posterServer.base);
+    await page.getByRole('button', {name: 'Continue with Google', exact: true}).click();
+    await expect(page.getByRole('heading', {name: 'Your life in movies.'})).toBeVisible();
+    const statuses = await page.evaluate(async movies => {
+      const statuses = [];
+      for (const movie of movies) statuses.push((await fetch('/api/entries', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Reel-Session': sessionStorage.getItem('reel_google_session')}, body: JSON.stringify({movie, status: 'watched', scope: 'personal', watched_on: '2020-01-01', watch_company: 'unspecified'})})).status);
+      return statuses;
+    }, movies);
+    assert.deepEqual(statuses, [201, 201, 201]);
+    await page.reload();
+    await expect(page.locator('.movie-card')).toHaveCount(3);
+    const copies = page.locator('.movie-card .poster-copy');
+    await expect(copies).toHaveCount(2);
+    await expect.poll(() => copies.evaluateAll(images => images.every(img => img.complete && img.naturalWidth > 0))).toBe(true);
+    assert.deepEqual((await copies.evaluateAll(images => images.map(img => new URL(img.src).pathname))).sort(), ['/api/posters/kinopoisk/430', '/api/posters/tmdb/550']);
+    await expect(page.locator('.movie-card').filter({hasText: 'Missing poster'}).locator('.poster-art strong')).toContainText('Missing poster');
+    await page.reload();
+    await expect(page.locator('.movie-card')).toHaveCount(3);
+    await page.getByRole('button', {name: '＋ Log a film', exact: true}).click();
+    for (const provider of ['kinopoisk', 'tmdb']) {
+      await page.locator('#catalog-source').selectOption(provider);
+      await page.locator('#catalog-query').fill('test film');
+      await page.locator('#search-catalog').click();
+      const image = page.locator('#catalog-results .poster-copy');
+      await expect(image).toHaveCount(1);
+      await expect.poll(() => image.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+      assert.ok((await image.getAttribute('src')).startsWith('/api/posters/'));
+    }
+    assert.equal(upstream.get(kpSource), 1);
+    assert.equal(upstream.get('https://image.tmdb.org/t/p/w342/abc123.jpg'), 1);
+    assert.deepEqual(externalImages, []);
+    await page.screenshot({path: 'test-results/local-posters.png', fullPage: true});
+  } finally {await context.close(); await posterServer.close(); local.binding.close();}
+});
 test('Google is the only sign-in and a new account opens an empty diary immediately', {timeout: 60000}, async () => {
   const context = await browser.newContext(), page = await context.newPage();
   await googleBrowser(page, 'newcomer');

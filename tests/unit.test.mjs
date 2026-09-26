@@ -3,6 +3,27 @@ import assert from 'node:assert/strict';
 import {parseMovieId, viewing, activeLink, validGrant, canSee, watchKey} from '../server/domain.js';
 import {Catalog, safePoster} from '../server/catalog.js';
 
+test('catalog calls native fetch without binding it to the Catalog instance', async t => {
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async function (url, options) {
+    // Workers enforce the native receiver; Node's fetch accepts any receiver.
+    if (this !== undefined && this !== globalThis) throw new TypeError('Illegal invocation');
+    requests.push(url.hostname);
+    return Response.json({ok: true});
+  });
+  const catalog = new Catalog(null, {kinopoiskToken: 'test-kp', tmdbToken: 'test-tmdb'});
+  for (const provider of ['kinopoisk', 'tmdb']) assert.deepEqual(await catalog.request(provider, '/test'), {ok: true});
+  assert.deepEqual(requests, ['kinopoiskapiunofficial.tech', 'api.themoviedb.org']);
+});
+
+test('catalog connection failures log the provider and error type without credentials', async t => {
+  const log = t.mock.method(console, 'error', () => {});
+  const token = 'private-catalog-key';
+  const catalog = new Catalog(null, {tmdbToken: token}, async () => {throw new TypeError(`Request failed with ${token}`);});
+  await assert.rejects(catalog.request('tmdb', '/test'), error => error.status === 502 && !error.message.includes(token));
+  assert.deepEqual(log.mock.calls.map(call => call.arguments), [['Catalog connection failed:', 'tmdb', 'TypeError']]);
+});
+
 test('catalog requests support the hosted fetch API and never follow credential-bearing redirects', async () => {
   let redirect = false;
   const requests = [];

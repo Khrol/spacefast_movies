@@ -9,7 +9,8 @@ export function safePoster(value) {
 }
 const rating = value => typeof value === 'number' && value >= 0 && value <= 10 ? Math.round(value * 10) / 10 : null;
 export class Catalog {
-  constructor(db, secrets, fetcher = fetch) { this.db = db; this.secrets = secrets; this.fetcher = fetcher; }
+  // Workers' native fetch must run with its global receiver, not this Catalog.
+  constructor(db, secrets, fetcher = (...args) => fetch(...args)) { this.db = db; this.secrets = secrets; this.fetcher = fetcher; }
   providers() { return ['kinopoisk', 'tmdb'].filter(p => this.secrets[`${p}Token`]).map(p => ({id: p, name: p === 'kinopoisk' ? 'Kinopoisk — Russian titles & ratings' : 'TMDB'})); }
   async request(provider, path, params = {}) {
     const token = this.secrets[`${provider}Token`];
@@ -18,7 +19,12 @@ export class Catalog {
     url.search = new URLSearchParams(params).toString();
     let response;
     try { response = await this.fetcher(url, {headers: {Accept: 'application/json', ...(provider === 'kinopoisk' ? {'X-API-KEY': token} : {Authorization: `Bearer ${token}`})}, signal: AbortSignal.timeout(10000), redirect: 'manual'}); }
-    catch { fail('The movie catalog could not connect. Try again or enter a title manually.', 502); }
+    catch (error) {
+      // Native error messages can contain request data. Log only a fixed category.
+      const kind = ['TypeError', 'TimeoutError', 'AbortError'].includes(error?.name) ? error.name : 'Error';
+      console.error('Catalog connection failed:', provider, kind);
+      fail('The movie catalog could not connect. Try again or enter a title manually.', 502);
+    }
     if (response.status === 404) fail('No film with that exact ID was found.', 404);
     if ([402, 429].includes(response.status)) fail('The catalog request limit was reached. Manual entry still works.', 429);
     if (!response.ok) fail('The catalog is unavailable or rejected its API key.', 502);
